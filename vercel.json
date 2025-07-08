@@ -11,19 +11,5 @@
       "src": "/(.*)",
       "dest": "main.py"
     }
-  ],
-  "env": {
-    "DATABASE_URL": "@database_url",
-    "JWT_SECRET_KEY": "@jwt_secret_key",
-    "SUPABASE_URL": "@supabase_url",
-    "SUPABASE_ANON_KEY": "@supabase_anon_key",
-    "SUPABASE_SERVICE_KEY": "@supabase_service_key",
-    "FLASK_ENV": "production"
-  },
-  "functions": {
-    "main.py": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
-
