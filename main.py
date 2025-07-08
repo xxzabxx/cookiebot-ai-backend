@@ -15,7 +15,12 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
 jwt = JWTManager(app)
-CORS(app, origins=["*"])
+CORS(app, origins=[
+    "https://cookiebot.ai",
+    "https://cookiebot-ai-website.netlify.app",
+    "http://localhost:3000",
+    "http://localhost:5173"
+], supports_credentials=True )
 
 # In-memory storage for testing (will be replaced with database later)
 users_db = {}
