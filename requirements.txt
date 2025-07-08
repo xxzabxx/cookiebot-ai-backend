@@ -1,6 +1,6 @@
-Flask==2.3.3
-Flask-CORS==4.0.0
-Flask-JWT-Extended==4.5.3
-bcrypt==4.0.1
-python-dotenv==1.0.0
+Flask
+Flask-CORS
+Flask-JWT-Extended
+bcrypt
+python-dotenv
 psycopg2-binary
