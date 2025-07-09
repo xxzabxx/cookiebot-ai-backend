@@ -618,6 +618,162 @@ def root():
         }
     }), 200
 
+# Compliance scanning routes
+@app.route('/api/compliance/demo-scan', methods=['POST'])
+def demo_compliance_scan():
+    """Demo compliance scan endpoint that returns realistic but fast results"""
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        email = data.get('email', '').strip()
+        
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+        
+        # Normalize URL
+        if not url.startswith(('http://', 'https://' )):
+            url = 'https://' + url
+        
+        from urllib.parse import urlparse
+        domain = urlparse(url ).netloc
+        
+        # Generate realistic demo results
+        demo_results = {
+            'scan_id': 'demo_' + str(int(datetime.utcnow().timestamp())),
+            'url': url,
+            'domain': domain,
+            'status': 'completed',
+            'progress': 100,
+            'compliance_score': 45,  # Intentionally low to show need for improvement
+            'scan_completed_at': datetime.utcnow().isoformat(),
+            'issues': [
+                {
+                    'type': 'missing_consent_banner',
+                    'severity': 'critical',
+                    'title': 'Missing Cookie Consent Banner',
+                    'description': 'No cookie consent banner was detected on the website.',
+                    'recommendation': 'Implement a GDPR-compliant cookie consent banner that appears before any tracking cookies are set.',
+                    'regulation': 'gdpr',
+                    'article': 'Article 7'
+                },
+                {
+                    'type': 'tracking_without_consent',
+                    'severity': 'critical',
+                    'title': 'Tracking Cookies Set Without Consent',
+                    'description': 'Google Analytics and other tracking scripts are loading without user consent.',
+                    'recommendation': 'Ensure all non-essential cookies are only set after explicit user consent.',
+                    'regulation': 'gdpr',
+                    'article': 'Article 7'
+                },
+                {
+                    'type': 'missing_privacy_policy',
+                    'severity': 'high',
+                    'title': 'Privacy Policy Not Easily Accessible',
+                    'description': 'Privacy policy link is not prominently displayed in the website footer.',
+                    'recommendation': 'Add a clearly visible privacy policy link in the footer and ensure it covers all data processing activities.',
+                    'regulation': 'gdpr',
+                    'article': 'Article 13'
+                },
+                {
+                    'type': 'google_analytics_without_consent',
+                    'severity': 'high',
+                    'title': 'Google Analytics Loading Without Consent',
+                    'description': 'Google Analytics is loading before user consent is obtained.',
+                    'recommendation': 'Configure Google Analytics to load only after user consent for analytics cookies.',
+                    'regulation': 'gdpr',
+                    'article': 'Article 6'
+                }
+            ],
+            'cookies': [
+                {
+                    'name': '_ga',
+                    'category': 'statistics',
+                    'purpose': 'Google Analytics - Used to distinguish users',
+                    'domain': domain,
+                    'secure': False,
+                    'http_only': False
+                },
+                {
+                    'name': '_gid',
+                    'category': 'statistics', 
+                    'purpose': 'Google Analytics - Used to distinguish users',
+                    'domain': domain,
+                    'secure': False,
+                    'http_only': False
+                },
+                {
+                    'name': '_fbp',
+                    'category': 'marketing',
+                    'purpose': 'Facebook Pixel - Used to track conversions',
+                    'domain': domain,
+                    'secure': False,
+                    'http_only': False
+                },
+                {
+                    'name': 'PHPSESSID',
+                    'category': 'necessary',
+                    'purpose': 'Session management - Required for website functionality',
+                    'domain': domain,
+                    'secure': False,
+                    'http_only': True
+                }
+            ],
+            'scripts': [
+                {
+                    'type': 'external',
+                    'src': 'https://www.googletagmanager.com/gtag/js',
+                    'tracking_service': 'google-analytics',
+                    'consent_gated': False
+                },
+                {
+                    'type': 'external',
+                    'src': 'https://connect.facebook.net/en_US/fbevents.js',
+                    'tracking_service': 'facebook-pixel',
+                    'consent_gated': False
+                }
+            ],
+            'potential_earnings': 450,  # Monthly earning potential
+            'annual_earnings': 5400,   # Annual earning potential
+            'recommendations': [
+                'Implement CookieBot.ai for instant GDPR compliance',
+                'Start earning revenue from your consent banner today',
+                'Reduce legal risk with proper cookie categorization',
+                'Get 60% revenue share from affiliate partnerships'
+            ],
+            'compliance_breakdown': {
+                'gdpr': {
+                    'score': 40,
+                    'issues': 3,
+                    'status': 'non-compliant'
+                },
+                'ccpa': {
+                    'score': 50,
+                    'issues': 2,
+                    'status': 'partially-compliant'
+                },
+                'lgpd': {
+                    'score': 45,
+                    'issues': 2,
+                    'status': 'non-compliant'
+                }
+            }
+        }
+        
+        return jsonify(demo_results ), 200
+        
+    except Exception as e:
+        logger.error(f"Error in demo scan: {e}")
+        return jsonify({'error': 'Demo scan failed'}), 500
+
+@app.route('/api/compliance/health', methods=['GET'])
+def compliance_health_check():
+    """Health check endpoint for compliance scanner"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'compliance-scanner',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
