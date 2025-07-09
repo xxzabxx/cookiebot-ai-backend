@@ -1,9 +1,7 @@
 from flask import Flask, jsonify
 import os
-import logging
-
-logging.basicConfig(level=logging.INFO )
-logger = logging.getLogger(__name__)
+import sys
+import traceback
 
 app = Flask(__name__)
 
@@ -15,83 +13,93 @@ def health_check():
         # Test psycopg2 import
         try:
             import psycopg2
-            from psycopg2 import OperationalError
+            from psycopg2 import OperationalError, DatabaseError
         except ImportError as e:
             return jsonify({
                 'status': 'unhealthy',
                 'error': f'psycopg2 import failed: {str(e)}'
             }), 500
         
-        # Parse DATABASE_URL to show components
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(DATABASE_URL)
-            
-            connection_info = {
-                'host': parsed.hostname,
-                'port': parsed.port,
-                'database': parsed.path[1:] if parsed.path else None,
-                'username': parsed.username,
-                'password_length': len(parsed.password) if parsed.password else 0
-            }
-        except Exception as e:
-            connection_info = {'parse_error': str(e)}
+        # Test connection with maximum error detail
+        error_details = []
         
-        # Test different connection approaches
-        test_results = []
-        
-        # Test 1: Basic connection
         try:
+            # Test 1: Basic connection
             conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            result = cur.fetchone()
+            cur.close()
             conn.close()
-            test_results.append({'test': 'basic_connection', 'result': 'SUCCESS'})
-        except OperationalError as e:
-            test_results.append({
-                'test': 'basic_connection', 
-                'result': 'FAILED',
-                'error': str(e)[:200]
-            })
-        except Exception as e:
-            test_results.append({
-                'test': 'basic_connection', 
-                'result': 'FAILED',
-                'error': f'{type(e).__name__}: {str(e)[:200]}'
-            })
-        
-        # Test 2: Connection with explicit SSL
-        try:
-            ssl_url = DATABASE_URL
-            if '?sslmode=' not in ssl_url:
-                ssl_url += '?sslmode=require'
             
-            conn = psycopg2.connect(ssl_url)
-            conn.close()
-            test_results.append({'test': 'ssl_connection', 'result': 'SUCCESS'})
+            return jsonify({
+                'status': 'healthy',
+                'database': 'connected',
+                'test_query_result': result[0]
+            }), 200
+            
         except Exception as e:
-            test_results.append({
-                'test': 'ssl_connection', 
-                'result': 'FAILED',
-                'error': f'{type(e).__name__}: {str(e)[:200]}'
-            })
+            # Capture every possible detail about the error
+            error_info = {
+                'error_type': str(type(e).__name__),
+                'error_str': str(e),
+                'error_repr': repr(e),
+                'error_args': str(e.args) if hasattr(e, 'args') else 'No args',
+                'traceback': traceback.format_exc()
+            }
+            
+            # Try to get more specific psycopg2 error details
+            if hasattr(e, 'pgcode'):
+                error_info['pgcode'] = e.pgcode
+            if hasattr(e, 'pgerror'):
+                error_info['pgerror'] = str(e.pgerror)
+            if hasattr(e, 'diag'):
+                error_info['diag'] = str(e.diag)
+                
+            error_details.append(error_info)
+        
+        # Test 2: Try with different SSL modes
+        ssl_modes = ['require', 'prefer', 'disable']
+        for ssl_mode in ssl_modes:
+            try:
+                test_url = DATABASE_URL.split('?')[0] + f'?sslmode={ssl_mode}'
+                conn = psycopg2.connect(test_url)
+                conn.close()
+                
+                return jsonify({
+                    'status': 'healthy',
+                    'database': 'connected',
+                    'ssl_mode_that_worked': ssl_mode
+                }), 200
+                
+            except Exception as e:
+                error_details.append({
+                    'ssl_mode': ssl_mode,
+                    'error_type': str(type(e).__name__),
+                    'error_message': str(e),
+                    'error_args': str(e.args) if hasattr(e, 'args') else 'No args'
+                })
         
         return jsonify({
-            'status': 'diagnostic',
-            'connection_info': connection_info,
-            'test_results': test_results,
-            'database_url_length': len(DATABASE_URL)
-        }), 200
+            'status': 'unhealthy',
+            'database': 'disconnected',
+            'database_url_length': len(DATABASE_URL),
+            'database_url_start': DATABASE_URL[:60],
+            'error_details': error_details
+        }), 500
             
     except Exception as e:
         return jsonify({
             'status': 'unhealthy',
-            'error': f'Diagnostic failed: {str(e)}'
+            'error': f'Diagnostic failed: {str(e)}',
+            'traceback': traceback.format_exc()
         }), 500
 
 @app.route('/', methods=['GET'])
 def root():
     return jsonify({
-        'message': 'CookieBot.ai Backend API - Full Diagnostic',
-        'version': '2.0.0-diagnostic'
+        'message': 'CookieBot.ai Backend API - Maximum Error Detail',
+        'version': '2.0.0-max-diagnostic'
     }), 200
 
 if __name__ == '__main__':
