@@ -6,10 +6,11 @@ import bcrypt
 from datetime import datetime, timedelta
 import uuid
 import json
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from psycopg2 import pool
 import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -24,48 +25,56 @@ CORS(app, origins=[
     "https://cookiebot-ai-website.netlify.app",
     "http://localhost:3000",
     "http://localhost:5173"
-], supports_credentials=True)
+], supports_credentials=True )
 
-# Database configuration
+# Database configuration with detailed error handling
 DATABASE_URL = os.environ.get('DATABASE_URL')
+logger.info(f"DATABASE_URL present: {bool(DATABASE_URL)}")
+
 if not DATABASE_URL:
+    logger.error("DATABASE_URL environment variable is missing")
     raise ValueError("DATABASE_URL environment variable is required")
 
-# Connection pool for better performance
-connection_pool = None
-
-def init_db_pool():
-    """Initialize database connection pool"""
-    global connection_pool
-    try:
-        connection_pool = psycopg2.pool.SimpleConnectionPool(
-            1, 20,  # min and max connections
-            DATABASE_URL,
-            cursor_factory=RealDictCursor
-        )
-        print("Database connection pool created successfully")
-        
-        # Create tables if they don't exist
-        create_tables()
-        
-    except Exception as e:
-        print(f"Error creating connection pool: {e}")
-        raise
+# Try to import and test PostgreSQL connection
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    logger.info("psycopg2 imported successfully")
+    
+    # Test database connection
+    def test_db_connection():
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cur = conn.cursor()
+            cur.execute("SELECT 1 as test")
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            logger.info(f"Database connection test successful: {result}")
+            return True
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return False
+    
+    # Test connection on startup
+    db_connected = test_db_connection()
+    logger.info(f"Database connected: {db_connected}")
+    
+except ImportError as e:
+    logger.error(f"Failed to import psycopg2: {e}")
+    raise
+except Exception as e:
+    logger.error(f"Database setup error: {e}")
+    raise
 
 def get_db_connection():
-    """Get a connection from the pool"""
+    """Get a database connection"""
     try:
-        return connection_pool.getconn()
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
     except Exception as e:
-        print(f"Error getting database connection: {e}")
+        logger.error(f"Error getting database connection: {e}")
         raise
-
-def return_db_connection(conn):
-    """Return a connection to the pool"""
-    try:
-        connection_pool.putconn(conn)
-    except Exception as e:
-        print(f"Error returning database connection: {e}")
 
 def create_tables():
     """Create database tables if they don't exist"""
@@ -117,36 +126,25 @@ def create_tables():
             )
         """)
         
-        # Revenue table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS revenue (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-                website_id UUID REFERENCES websites(id) ON DELETE CASCADE,
-                amount DECIMAL(10,2) NOT NULL,
-                source VARCHAR(100),
-                status VARCHAR(50) DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
         conn.commit()
-        print("Database tables created successfully")
+        logger.info("Database tables created successfully")
         
     except Exception as e:
         if conn:
             conn.rollback()
-        print(f"Error creating tables: {e}")
+        logger.error(f"Error creating tables: {e}")
         raise
     finally:
         if conn:
-            return_db_connection(conn)
+            conn.close()
 
 # Initialize database on startup
 try:
-    init_db_pool()
+    create_tables()
+    logger.info("Database initialization completed")
 except Exception as e:
-    print(f"Failed to initialize database: {e}")
+    logger.error(f"Failed to initialize database: {e}")
+    # Don't raise here - let the app start and show the error in health check
 
 # Helper functions
 def hash_password(password):
@@ -166,11 +164,11 @@ def get_user_by_email(email):
         cur.execute("SELECT * FROM users WHERE email = %s", (email,))
         return cur.fetchone()
     except Exception as e:
-        print(f"Error getting user by email: {e}")
+        logger.error(f"Error getting user by email: {e}")
         return None
     finally:
         if conn:
-            return_db_connection(conn)
+            conn.close()
 
 def get_user_by_id(user_id):
     """Get user by ID from database"""
@@ -181,17 +179,18 @@ def get_user_by_id(user_id):
         cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
         return cur.fetchone()
     except Exception as e:
-        print(f"Error getting user by ID: {e}")
+        logger.error(f"Error getting user by ID: {e}")
         return None
     finally:
         if conn:
-            return_db_connection(conn)
+            conn.close()
 
 # Authentication routes
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     try:
         data = request.get_json()
+        logger.info(f"Registration attempt for email: {data.get('email', 'unknown')}")
         
         # Validate required fields
         required_fields = ['email', 'password', 'first_name', 'last_name']
@@ -229,6 +228,8 @@ def register():
             # Create access token
             access_token = create_access_token(identity=str(user['id']))
             
+            logger.info(f"User registered successfully: {email}")
+            
             return jsonify({
                 'message': 'User registered successfully',
                 'access_token': access_token,
@@ -245,15 +246,15 @@ def register():
         except Exception as e:
             if conn:
                 conn.rollback()
-            print(f"Database error during registration: {e}")
-            return jsonify({'error': 'Database error during registration'}), 500
+            logger.error(f"Database error during registration: {e}")
+            return jsonify({'error': f'Database error during registration: {str(e)}'}), 500
         finally:
             if conn:
-                return_db_connection(conn)
+                conn.close()
         
     except Exception as e:
-        print(f"Registration error: {e}")
-        return jsonify({'error': 'Registration failed'}), 500
+        logger.error(f"Registration error: {e}")
+        return jsonify({'error': f'Registration failed: {str(e)}'}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -292,8 +293,8 @@ def login():
         }), 200
         
     except Exception as e:
-        print(f"Login error: {e}")
-        return jsonify({'error': 'Login failed'}), 500
+        logger.error(f"Login error: {e}")
+        return jsonify({'error': f'Login failed: {str(e)}'}), 500
 
 # User routes
 @app.route('/api/user/profile', methods=['GET'])
@@ -318,59 +319,8 @@ def get_user_profile():
         }), 200
         
     except Exception as e:
-        print(f"Profile error: {e}")
-        return jsonify({'error': 'Failed to get profile'}), 500
-
-@app.route('/api/user/profile', methods=['PUT'])
-@jwt_required()
-def update_user_profile():
-    try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        conn = None
-        try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            
-            # Update user profile
-            cur.execute("""
-                UPDATE users 
-                SET first_name = %s, last_name = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-                RETURNING id, email, first_name, last_name, subscription_plan, revenue_balance
-            """, (data.get('first_name'), data.get('last_name'), user_id))
-            
-            user = cur.fetchone()
-            conn.commit()
-            
-            if not user:
-                return jsonify({'error': 'User not found'}), 404
-            
-            return jsonify({
-                'message': 'Profile updated successfully',
-                'user': {
-                    'id': str(user['id']),
-                    'email': user['email'],
-                    'first_name': user['first_name'],
-                    'last_name': user['last_name'],
-                    'subscription_plan': user['subscription_plan'],
-                    'revenue_balance': float(user['revenue_balance'])
-                }
-            }), 200
-            
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            print(f"Database error updating profile: {e}")
-            return jsonify({'error': 'Database error'}), 500
-        finally:
-            if conn:
-                return_db_connection(conn)
-        
-    except Exception as e:
-        print(f"Update profile error: {e}")
-        return jsonify({'error': 'Failed to update profile'}), 500
+        logger.error(f"Profile error: {e}")
+        return jsonify({'error': f'Failed to get profile: {str(e)}'}), 500
 
 # Website management routes
 @app.route('/api/websites', methods=['GET'])
@@ -408,15 +358,15 @@ def get_websites():
             }), 200
             
         except Exception as e:
-            print(f"Database error getting websites: {e}")
-            return jsonify({'error': 'Database error'}), 500
+            logger.error(f"Database error getting websites: {e}")
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
         finally:
             if conn:
-                return_db_connection(conn)
+                conn.close()
         
     except Exception as e:
-        print(f"Get websites error: {e}")
-        return jsonify({'error': 'Failed to get websites'}), 500
+        logger.error(f"Get websites error: {e}")
+        return jsonify({'error': f'Failed to get websites: {str(e)}'}), 500
 
 @app.route('/api/websites', methods=['POST'])
 @jwt_required()
@@ -468,56 +418,15 @@ def add_website():
         except Exception as e:
             if conn:
                 conn.rollback()
-            print(f"Database error adding website: {e}")
-            return jsonify({'error': 'Database error'}), 500
+            logger.error(f"Database error adding website: {e}")
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
         finally:
             if conn:
-                return_db_connection(conn)
+                conn.close()
         
     except Exception as e:
-        print(f"Add website error: {e}")
-        return jsonify({'error': 'Failed to add website'}), 500
-
-@app.route('/api/websites/<website_id>', methods=['DELETE'])
-@jwt_required()
-def remove_website(website_id):
-    try:
-        user_id = get_jwt_identity()
-        
-        conn = None
-        try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            
-            # Delete website (only if it belongs to the user)
-            cur.execute("""
-                DELETE FROM websites 
-                WHERE id = %s AND user_id = %s
-                RETURNING domain
-            """, (website_id, user_id))
-            
-            deleted_website = cur.fetchone()
-            conn.commit()
-            
-            if not deleted_website:
-                return jsonify({'error': 'Website not found'}), 404
-            
-            return jsonify({
-                'message': f'Website {deleted_website["domain"]} removed successfully'
-            }), 200
-            
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            print(f"Database error removing website: {e}")
-            return jsonify({'error': 'Database error'}), 500
-        finally:
-            if conn:
-                return_db_connection(conn)
-        
-    except Exception as e:
-        print(f"Remove website error: {e}")
-        return jsonify({'error': 'Failed to remove website'}), 500
+        logger.error(f"Add website error: {e}")
+        return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
 
 # Analytics routes
 @app.route('/api/analytics/dashboard', methods=['GET'])
@@ -571,15 +480,15 @@ def get_dashboard_analytics():
             }), 200
             
         except Exception as e:
-            print(f"Database error getting analytics: {e}")
-            return jsonify({'error': 'Database error'}), 500
+            logger.error(f"Database error getting analytics: {e}")
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
         finally:
             if conn:
-                return_db_connection(conn)
+                conn.close()
         
     except Exception as e:
-        print(f"Analytics error: {e}")
-        return jsonify({'error': 'Failed to get analytics'}), 500
+        logger.error(f"Analytics error: {e}")
+        return jsonify({'error': f'Failed to get analytics: {str(e)}'}), 500
 
 # Public tracking route (no auth required)
 @app.route('/api/public/track', methods=['POST'])
@@ -588,8 +497,7 @@ def track_event():
         data = request.get_json()
         
         # For now, just log the event
-        # In production, this would save to analytics table
-        print(f"Tracking event: {data}")
+        logger.info(f"Tracking event: {data}")
         
         return jsonify({
             'message': 'Event tracked successfully',
@@ -598,33 +506,45 @@ def track_event():
         }), 200
         
     except Exception as e:
-        print(f"Tracking error: {e}")
-        return jsonify({'error': 'Failed to track event'}), 500
+        logger.error(f"Tracking error: {e}")
+        return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
 
-# Health check endpoint
+# Health check endpoint with detailed database status
 @app.route('/api/health', methods=['GET'])
 def health_check():
     try:
         # Test database connection
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.fetchone()
-        return_db_connection(conn)
+        cur.execute("SELECT 1 as test, version() as db_version")
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
         
         return jsonify({
             'status': 'healthy',
             'timestamp': datetime.utcnow().isoformat(),
-            'database': 'connected'
+            'database': 'connected',
+            'database_version': result['db_version'] if result else 'unknown',
+            'environment_vars': {
+                'DATABASE_URL': bool(os.environ.get('DATABASE_URL')),
+                'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
+                'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
+            }
         }), 200
         
     except Exception as e:
-        print(f"Health check error: {e}")
+        logger.error(f"Health check error: {e}")
         return jsonify({
             'status': 'unhealthy',
             'timestamp': datetime.utcnow().isoformat(),
             'database': 'disconnected',
-            'error': str(e)
+            'error': str(e),
+            'environment_vars': {
+                'DATABASE_URL': bool(os.environ.get('DATABASE_URL')),
+                'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
+                'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
+            }
         }), 500
 
 # Root endpoint
@@ -639,5 +559,4 @@ def root():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-
 
