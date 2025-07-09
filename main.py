@@ -160,8 +160,8 @@ def register():
             user = cur.fetchone()
             conn.commit()
             
-            # Create access token
-            access_token = create_access_token(identity=user['id'])
+            # Create access token - FIX: Convert user ID to string
+            access_token = create_access_token(identity=str(user['id']))
             
             return jsonify({
                 'message': 'User created successfully',
@@ -217,8 +217,8 @@ def login():
             if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
                 return jsonify({'error': 'Invalid credentials'}), 401
             
-            # Create access token
-            access_token = create_access_token(identity=user['id'])
+            # Create access token - FIX: Convert user ID to string
+            access_token = create_access_token(identity=str(user['id']))
             
             return jsonify({
                 'message': 'Login successful',
@@ -249,7 +249,8 @@ def login():
 @jwt_required()
 def get_profile():
     try:
-        user_id = get_jwt_identity()
+        # FIX: Convert JWT identity back to integer
+        user_id = int(get_jwt_identity())
         
         conn = get_db_connection()
         if not conn:
@@ -297,7 +298,8 @@ def get_profile():
 @jwt_required()
 def get_websites():
     try:
-        user_id = get_jwt_identity()
+        # FIX: Convert JWT identity back to integer
+        user_id = int(get_jwt_identity())
         
         conn = get_db_connection()
         if not conn:
@@ -343,7 +345,8 @@ def get_websites():
 @jwt_required()
 def add_website():
     try:
-        user_id = get_jwt_identity()
+        # FIX: Convert JWT identity back to integer
+        user_id = int(get_jwt_identity())
         data = request.get_json()
         domain = data.get('domain')
         
@@ -351,7 +354,7 @@ def add_website():
             return jsonify({'error': 'Domain is required'}), 400
         
         # Clean domain (remove protocol, www, trailing slash)
-        domain = domain.replace('https://', '' ).replace('http://', '' ).replace('www.', '').rstrip('/')
+        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
         
         conn = get_db_connection()
         if not conn:
@@ -372,7 +375,7 @@ def add_website():
 (function() {{
     var script = document.createElement('script');
     script.src = 'https://api.cookiebot.ai/js/cookiebot.js';
-    script.setAttribute('data-website-id', '{uuid.uuid4( )}');
+    script.setAttribute('data-website-id', '{uuid.uuid4()}');
     script.setAttribute('data-domain', '{domain}');
     document.head.appendChild(script);
 }})();
@@ -418,7 +421,8 @@ def add_website():
 @jwt_required()
 def get_dashboard_analytics():
     try:
-        user_id = get_jwt_identity()
+        # FIX: Convert JWT identity back to integer
+        user_id = int(get_jwt_identity())
         
         conn = get_db_connection()
         if not conn:
@@ -616,3 +620,4 @@ def root():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+
