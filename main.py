@@ -1,19 +1,23 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-import sqlite3
-import hashlib
-import time
-import threading
-import requests
-import re
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import bcrypt
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+import uuid
+import json
 import logging
+import requests
+import threading
+import time
+import re
+from urllib.parse import urljoin, urlparse
 import traceback
 import sys
 
-# Configure comprehensive logging
+# Configure comprehensive logging for scanner debugging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -23,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Try to import BeautifulSoup
+# Try to import BeautifulSoup with fallback
 try:
     from bs4 import BeautifulSoup
     BS4_AVAILABLE = True
@@ -33,55 +37,73 @@ except ImportError:
     logger.warning("BeautifulSoup4 not available, using fallback parsing")
 
 app = Flask(__name__)
-CORS(app)
 
-# JWT Configuration
-app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
+# Configuration (KEEP ORIGINAL)
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-jwt-secret-change-in-production')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+
+# Initialize extensions
 jwt = JWTManager(app)
+CORS(app, origins=["*"])  # Allow all origins for development
+
+# Database connection (KEEP ORIGINAL)
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(
+            os.environ.get('DATABASE_URL'),
+            cursor_factory=RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        return None
+
+# Initialize database tables (KEEP ORIGINAL)
+def init_db():
+    conn = get_db_connection()
+    if not conn:
+        logger.error("Failed to connect to database")
+        return False
+    
+    try:
+        cur = conn.cursor()
+        
+        # Users table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Websites table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS websites (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                domain VARCHAR(255) NOT NULL,
+                last_scan TIMESTAMP,
+                compliance_score INTEGER
+            )
+        ''')
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("Database tables initialized successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        return False
 
 # Global variables for scan storage
 scan_results = {}
 scan_status = {}
 
-def init_db():
-    """Initialize the database with required tables"""
-    try:
-        logger.info("Initializing database...")
-        conn = sqlite3.connect('cookiebot.db')
-        cursor = conn.cursor()
-        
-        # Create users table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create websites table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS websites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                domain TEXT NOT NULL,
-                last_scan TIMESTAMP,
-                compliance_score INTEGER,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        logger.info("Database tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {str(e)}")
-        logger.error(traceback.format_exc())
-
 class DebugRealWebsiteAnalyzer:
-    """Debug version of RealWebsiteAnalyzer with comprehensive logging"""
+    """ONLY THE SCANNER HAS DEBUG LOGGING - AUTH SYSTEM UNCHANGED"""
     
     def __init__(self):
         logger.info("Initializing DebugRealWebsiteAnalyzer")
@@ -634,97 +656,95 @@ def perform_real_scan(scan_id, url, email):
             'email': email
         }
 
-# Authentication routes
+# Authentication routes (KEEP ORIGINAL - NO CHANGES)
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    logger.info("Login attempt received")
     try:
         data = request.get_json()
         email = data.get('email')
         password = data.get('password')
         
-        logger.info(f"Login attempt for email: {email}")
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'message': 'Database connection failed'}), 500
         
-        conn = sqlite3.connect('cookiebot.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT id, password_hash FROM users WHERE email = ?', (email,))
-        user = cursor.fetchone()
+        cur = conn.cursor()
+        cur.execute('SELECT id, password_hash FROM users WHERE email = %s', (email,))
+        user = cur.fetchone()
+        cur.close()
         conn.close()
         
-        if user and user[1] == hashlib.sha256(password.encode()).hexdigest():
-            access_token = create_access_token(identity=user[0])
-            logger.info(f"Login successful for user ID: {user[0]}")
+        if user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
+            access_token = create_access_token(identity=user['id'])
             return jsonify({'access_token': access_token, 'message': 'Login successful'})
         else:
-            logger.warning(f"Login failed for email: {email}")
             return jsonify({'message': 'Invalid credentials'}), 401
             
     except Exception as e:
-        logger.error(f"Login error: {str(e)}")
+        logger.error(f"Login error: {e}")
         return jsonify({'message': 'Login failed'}), 500
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
-    logger.info("Registration attempt received")
     try:
         data = request.get_json()
         email = data.get('email')
         password = data.get('password')
         
-        logger.info(f"Registration attempt for email: {email}")
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'message': 'Database connection failed'}), 500
         
-        conn = sqlite3.connect('cookiebot.db')
-        cursor = conn.cursor()
+        cur = conn.cursor()
         
         try:
-            cursor.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password_hash))
+            cur.execute('INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id', 
+                       (email, password_hash))
+            user_id = cur.fetchone()['id']
             conn.commit()
-            user_id = cursor.lastrowid
+            cur.close()
             conn.close()
             
             access_token = create_access_token(identity=user_id)
-            logger.info(f"Registration successful for user ID: {user_id}")
             return jsonify({'access_token': access_token, 'message': 'Registration successful'})
             
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
+            cur.close()
             conn.close()
-            logger.warning(f"Registration failed - email already exists: {email}")
             return jsonify({'message': 'Email already exists'}), 400
             
     except Exception as e:
-        logger.error(f"Registration error: {str(e)}")
+        logger.error(f"Registration error: {e}")
         return jsonify({'message': 'Registration failed'}), 500
 
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    logger.info("Profile request received")
     try:
         user_id = get_jwt_identity()
-        logger.info(f"Profile request for user ID: {user_id}")
         
-        conn = sqlite3.connect('cookiebot.db')
-        cursor = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'message': 'Database connection failed'}), 500
         
-        cursor.execute('SELECT email FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
+        cur = conn.cursor()
+        cur.execute('SELECT email FROM users WHERE id = %s', (user_id,))
+        user = cur.fetchone()
+        cur.close()
         conn.close()
         
         if user:
-            logger.info(f"Profile retrieved for user: {user[0]}")
-            return jsonify({'email': user[0]})
+            return jsonify({'email': user['email']})
         else:
-            logger.warning(f"User not found for ID: {user_id}")
             return jsonify({'message': 'User not found'}), 404
             
     except Exception as e:
-        logger.error(f"Profile error: {str(e)}")
+        logger.error(f"Profile error: {e}")
         return jsonify({'message': 'Failed to get profile'}), 500
 
-# Compliance scanning routes
+# Compliance scanning routes (ONLY SCANNER HAS DEBUG LOGGING)
 @app.route('/api/compliance/real-scan', methods=['POST'])
 @jwt_required()
 def start_real_compliance_scan():
@@ -794,7 +814,7 @@ def health_check():
         return jsonify({
             'status': 'healthy',
             'timestamp': datetime.utcnow().isoformat(),
-            'version': '2.0.0-debug',
+            'version': '2.0.0-minimal-debug',
             'features': {
                 'beautifulsoup': BS4_AVAILABLE,
                 'logging': True,
@@ -835,9 +855,8 @@ def test_fetch():
         })
 
 if __name__ == '__main__':
-    logger.info("Starting CookieBot.ai Debug Backend...")
+    logger.info("Starting CookieBot.ai Minimal Debug Backend...")
     init_db()
-    logger.info("Debug backend ready!")
+    logger.info("Minimal debug backend ready!")
     app.run(debug=True, host='0.0.0.0', port=5000)
-
 
