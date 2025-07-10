@@ -9,7 +9,18 @@ from datetime import datetime, timedelta
 import uuid
 import json
 import logging
+import requests
+import threading
+import time
+import re
+from urllib.parse import urljoin, urlparse
 
+# Try to import BeautifulSoup with fallback
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,13 +64,8 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
-                first_name VARCHAR(100),
-                last_name VARCHAR(100),
-                company VARCHAR(255),
-                subscription_tier VARCHAR(50) DEFAULT 'free',
-                revenue_balance DECIMAL(10,2) DEFAULT 0.00,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                company_name VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -122,6 +128,341 @@ def init_db():
 # Initialize database on startup
 init_db()
 
+class RealWebsiteAnalyzer:
+    """Real website analyzer that actually scans websites for compliance issues"""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
+        
+        # Known tracking scripts and their purposes
+        self.tracking_scripts = {
+            'googletagmanager.com': {'service': 'Google Tag Manager', 'category': 'statistics'},
+            'google-analytics.com': {'service': 'Google Analytics', 'category': 'statistics'},
+            'googleadservices.com': {'service': 'Google Ads', 'category': 'marketing'},
+            'facebook.net': {'service': 'Facebook Pixel', 'category': 'marketing'},
+            'doubleclick.net': {'service': 'Google DoubleClick', 'category': 'marketing'},
+            'hotjar.com': {'service': 'Hotjar', 'category': 'statistics'},
+            'mixpanel.com': {'service': 'Mixpanel', 'category': 'statistics'},
+            'intercom.io': {'service': 'Intercom', 'category': 'functional'},
+            'hubspot.com': {'service': 'HubSpot', 'category': 'marketing'},
+            'linkedin.com': {'service': 'LinkedIn Insight', 'category': 'marketing'}
+        }
+        
+        # Common cookie patterns and their purposes
+        self.cookie_patterns = {
+            '_ga': {'category': 'statistics', 'purpose': 'Google Analytics - Used to distinguish users'},
+            '_gid': {'category': 'statistics', 'purpose': 'Google Analytics - Used to distinguish users'},
+            '_fbp': {'category': 'marketing', 'purpose': 'Facebook Pixel - Used to track conversions'},
+            '_fbc': {'category': 'marketing', 'purpose': 'Facebook Pixel - Used to track conversions'},
+            'PHPSESSID': {'category': 'necessary', 'purpose': 'Session management - Required for website functionality'},
+            'JSESSIONID': {'category': 'necessary', 'purpose': 'Session management - Required for website functionality'}
+        }
+
+    def analyze_website(self, url, progress_callback=None):
+        """Analyze a website for compliance issues"""
+        try:
+            # Normalize URL
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            domain = urlparse(url).netloc
+            
+            if progress_callback:
+                progress_callback(10, "Fetching website content...")
+            
+            # Fetch the main page with timeout
+            response = self.session.get(url, timeout=15, allow_redirects=True)
+            response.raise_for_status()
+            
+            if progress_callback:
+                progress_callback(30, "Analyzing website structure...")
+            
+            # Parse HTML if BeautifulSoup is available
+            if BS4_AVAILABLE:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                scripts = self._analyze_scripts(soup, domain)
+                consent_banner = self._check_consent_banner(soup)
+                privacy_policy = self._check_privacy_policy(soup, url)
+            else:
+                # Fallback analysis without BeautifulSoup
+                scripts = self._analyze_scripts_fallback(response.text, domain)
+                consent_banner = self._check_consent_banner_fallback(response.text)
+                privacy_policy = self._check_privacy_policy_fallback(response.text)
+            
+            if progress_callback:
+                progress_callback(50, "Detecting cookies...")
+            
+            # Analyze cookies
+            cookies = self._analyze_cookies(response, domain)
+            
+            if progress_callback:
+                progress_callback(70, "Checking compliance...")
+            
+            # Generate compliance report
+            issues = self._generate_compliance_issues(cookies, scripts, consent_banner, privacy_policy, domain)
+            compliance_score = self._calculate_compliance_score(issues)
+            
+            if progress_callback:
+                progress_callback(100, "Generating compliance report...")
+            
+            return {
+                'scan_id': f'real_{int(time.time())}',
+                'url': url,
+                'domain': domain,
+                'status': 'completed',
+                'progress': 100,
+                'compliance_score': compliance_score,
+                'scan_completed_at': datetime.utcnow().isoformat(),
+                'issues': issues,
+                'cookies': cookies,
+                'scripts': scripts,
+                'consent_banner': consent_banner,
+                'privacy_policy': privacy_policy,
+                'potential_earnings': max(100, compliance_score * 10),
+                'annual_earnings': max(1200, compliance_score * 120),
+                'compliance_breakdown': self._get_compliance_breakdown(issues),
+                'recommendations': [
+                    'Implement CookieBot.ai for instant GDPR compliance',
+                    'Start earning revenue from your consent banner today',
+                    'Reduce legal risk with proper cookie categorization',
+                    'Get 60% revenue share from affiliate partnerships'
+                ]
+            }
+            
+        except requests.RequestException as e:
+            raise Exception(f"Failed to fetch website: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Analysis failed: {str(e)}")
+
+    def _analyze_cookies(self, response, domain):
+        """Analyze cookies set by the website"""
+        cookies = []
+        
+        for cookie in response.cookies:
+            cookie_info = {
+                'name': cookie.name,
+                'domain': cookie.domain or domain,
+                'secure': cookie.secure,
+                'http_only': hasattr(cookie, 'httponly') and cookie.httponly,
+                'category': 'unknown',
+                'purpose': 'Unknown purpose'
+            }
+            
+            # Categorize cookie based on name patterns
+            for pattern, info in self.cookie_patterns.items():
+                if pattern in cookie.name.lower():
+                    cookie_info['category'] = info['category']
+                    cookie_info['purpose'] = info['purpose']
+                    break
+            
+            cookies.append(cookie_info)
+        
+        return cookies
+
+    def _analyze_scripts(self, soup, domain):
+        """Analyze external scripts for tracking services (with BeautifulSoup)"""
+        scripts = []
+        
+        # Find all script tags
+        script_tags = soup.find_all('script', src=True)
+        
+        for script in script_tags:
+            src = script.get('src', '')
+            if src:
+                script_info = self._categorize_script(src, domain)
+                if script_info['tracking_service'] != 'unknown':
+                    scripts.append(script_info)
+        
+        return scripts
+
+    def _analyze_scripts_fallback(self, html_content, domain):
+        """Analyze scripts without BeautifulSoup (fallback)"""
+        scripts = []
+        
+        # Use regex to find script tags
+        script_pattern = r'<script[^>]*src=["\']([^"\']+)["\'][^>]*>'
+        matches = re.findall(script_pattern, html_content, re.IGNORECASE)
+        
+        for src in matches:
+            script_info = self._categorize_script(src, domain)
+            if script_info['tracking_service'] != 'unknown':
+                scripts.append(script_info)
+        
+        return scripts
+
+    def _categorize_script(self, src, domain):
+        """Categorize a script based on its source"""
+        # Make relative URLs absolute
+        if src.startswith('//'):
+            src = 'https:' + src
+        elif src.startswith('/'):
+            src = f"https://{domain}" + src
+        
+        script_info = {
+            'type': 'external',
+            'src': src,
+            'tracking_service': 'unknown',
+            'category': 'unknown',
+            'consent_gated': False
+        }
+        
+        # Check if it's a known tracking service
+        for tracker_domain, info in self.tracking_scripts.items():
+            if tracker_domain in src:
+                script_info['tracking_service'] = info['service']
+                script_info['category'] = info['category']
+                break
+        
+        return script_info
+
+    def _check_consent_banner(self, soup):
+        """Check for cookie consent banner (with BeautifulSoup)"""
+        consent_indicators = ['cookie', 'consent', 'privacy', 'gdpr', 'accept']
+        
+        # Check for common consent banner elements
+        for element in soup.find_all(['div', 'section', 'aside']):
+            classes = ' '.join(element.get('class', [])).lower()
+            element_id = element.get('id', '').lower()
+            text_content = element.get_text().lower()
+            
+            if any(indicator in classes or indicator in element_id or indicator in text_content 
+                   for indicator in consent_indicators):
+                return {'present': True, 'type': 'detected', 'compliant': True}
+        
+        return {'present': False, 'type': 'none', 'compliant': False}
+
+    def _check_consent_banner_fallback(self, html_content):
+        """Check for consent banner without BeautifulSoup (fallback)"""
+        consent_indicators = ['cookie', 'consent', 'privacy', 'gdpr', 'accept']
+        html_lower = html_content.lower()
+        
+        if any(indicator in html_lower for indicator in consent_indicators):
+            return {'present': True, 'type': 'detected', 'compliant': True}
+        
+        return {'present': False, 'type': 'none', 'compliant': False}
+
+    def _check_privacy_policy(self, soup, base_url):
+        """Check for privacy policy link (with BeautifulSoup)"""
+        privacy_indicators = ['privacy', 'policy', 'legal']
+        privacy_links = []
+        
+        for link in soup.find_all('a', href=True):
+            link_text = link.get_text().lower()
+            link_href = link.get('href', '').lower()
+            
+            if any(indicator in link_text or indicator in link_href for indicator in privacy_indicators):
+                privacy_links.append({
+                    'text': link.get_text().strip(),
+                    'href': urljoin(base_url, link.get('href'))
+                })
+        
+        return {
+            'links_found': len(privacy_links),
+            'links': privacy_links[:3],
+            'accessible': len(privacy_links) > 0
+        }
+
+    def _check_privacy_policy_fallback(self, html_content):
+        """Check for privacy policy without BeautifulSoup (fallback)"""
+        privacy_indicators = ['privacy policy', 'privacy', 'legal']
+        html_lower = html_content.lower()
+        
+        found_count = sum(1 for indicator in privacy_indicators if indicator in html_lower)
+        
+        return {
+            'links_found': found_count,
+            'links': [],
+            'accessible': found_count > 0
+        }
+
+    def _generate_compliance_issues(self, cookies, scripts, consent_banner, privacy_policy, domain):
+        """Generate compliance issues based on analysis"""
+        issues = []
+        
+        # Check for consent banner
+        if not consent_banner['present']:
+            issues.append({
+                'type': 'missing_consent_banner',
+                'severity': 'critical',
+                'title': 'Missing Cookie Consent Banner',
+                'description': 'No cookie consent banner was detected on the website.',
+                'recommendation': 'Implement a GDPR-compliant cookie consent banner.',
+                'regulation': 'gdpr',
+                'article': 'Article 7'
+            })
+        
+        # Check for tracking without consent
+        tracking_scripts = [s for s in scripts if s['category'] in ['statistics', 'marketing']]
+        if tracking_scripts and not consent_banner['present']:
+            issues.append({
+                'type': 'tracking_without_consent',
+                'severity': 'critical',
+                'title': 'Tracking Scripts Loading Without Consent',
+                'description': f'Found {len(tracking_scripts)} tracking scripts that may load without user consent.',
+                'recommendation': 'Ensure all non-essential cookies and tracking scripts are only loaded after explicit user consent.',
+                'regulation': 'gdpr',
+                'article': 'Article 7'
+            })
+        
+        # Check for privacy policy
+        if not privacy_policy['accessible']:
+            issues.append({
+                'type': 'missing_privacy_policy',
+                'severity': 'high',
+                'title': 'Privacy Policy Not Easily Accessible',
+                'description': 'Privacy policy link is not prominently displayed or accessible.',
+                'recommendation': 'Add a clearly visible privacy policy link.',
+                'regulation': 'gdpr',
+                'article': 'Article 13'
+            })
+        
+        return issues
+
+    def _calculate_compliance_score(self, issues):
+        """Calculate compliance score based on issues found"""
+        base_score = 100
+        
+        for issue in issues:
+            if issue['severity'] == 'critical':
+                base_score -= 25
+            elif issue['severity'] == 'high':
+                base_score -= 15
+            elif issue['severity'] == 'medium':
+                base_score -= 10
+            elif issue['severity'] == 'low':
+                base_score -= 5
+        
+        return max(0, base_score)
+
+    def _get_compliance_breakdown(self, issues):
+        """Get compliance breakdown by regulation"""
+        gdpr_issues = len([i for i in issues if i['regulation'] == 'gdpr'])
+        
+        return {
+            'gdpr': {
+                'score': max(0, 100 - (gdpr_issues * 20)),
+                'issues': gdpr_issues,
+                'status': 'compliant' if gdpr_issues == 0 else 'non-compliant'
+            },
+            'ccpa': {
+                'score': max(0, 100 - (gdpr_issues * 15)),
+                'issues': max(0, gdpr_issues - 1),
+                'status': 'compliant' if gdpr_issues <= 1 else 'partially-compliant'
+            },
+            'lgpd': {
+                'score': max(0, 100 - (gdpr_issues * 20)),
+                'issues': gdpr_issues,
+                'status': 'compliant' if gdpr_issues == 0 else 'non-compliant'
+            }
+        }
+
+# Global variables for scan tracking
+active_scans = {}
+real_analyzer = RealWebsiteAnalyzer()
+
 # Authentication routes
 @app.route('/api/auth/register', methods=['POST'])
 def register():
@@ -129,12 +470,13 @@ def register():
         data = request.get_json()
         email = data.get('email')
         password = data.get('password')
-        first_name = data.get('first_name', '')
-        last_name = data.get('last_name', '')
-        company = data.get('company', '')
+        company_name = data.get('company_name', '')
         
         if not email or not password:
             return jsonify({'error': 'Email and password are required'}), 400
+        
+        # Hash password
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
         conn = get_db_connection()
         if not conn:
@@ -142,52 +484,34 @@ def register():
         
         try:
             cur = conn.cursor()
-            
-            # Check if user exists
-            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
-            if cur.fetchone():
-                return jsonify({'error': 'User already exists'}), 409
-            
-            # Hash password
-            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            
-            # Create user
-            cur.execute("""
-                INSERT INTO users (email, password_hash, first_name, last_name, company)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, email, first_name, last_name, company, subscription_tier, revenue_balance, created_at
-            """, (email, password_hash, first_name, last_name, company))
-            
-            user = cur.fetchone()
+            cur.execute(
+                'INSERT INTO users (email, password_hash, company_name) VALUES (%s, %s, %s) RETURNING id',
+                (email, password_hash, company_name)
+            )
+            user_id = cur.fetchone()['id']
             conn.commit()
             
-            # Create access token - FIX: Convert user ID to string
-            access_token = create_access_token(identity=str(user['id']))
+            # Create access token
+            access_token = create_access_token(identity=user_id)
             
             return jsonify({
-                'message': 'User created successfully',
+                'message': 'User registered successfully',
                 'access_token': access_token,
                 'user': {
-                    'id': user['id'],
-                    'email': user['email'],
-                    'first_name': user['first_name'],
-                    'last_name': user['last_name'],
-                    'company': user['company'],
-                    'subscription_tier': user['subscription_tier'],
-                    'revenue_balance': float(user['revenue_balance'])
+                    'id': user_id,
+                    'email': email,
+                    'company_name': company_name
                 }
             }), 201
             
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Registration error: {e}")
-            return jsonify({'error': f'Registration failed: {str(e)}'}), 500
+        except psycopg2.IntegrityError:
+            return jsonify({'error': 'Email already exists'}), 409
         finally:
             conn.close()
-        
+            
     except Exception as e:
         logger.error(f"Registration error: {e}")
-        return jsonify({'error': f'Registration failed: {str(e)}'}), 500
+        return jsonify({'error': 'Registration failed'}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -205,53 +529,38 @@ def login():
         
         try:
             cur = conn.cursor()
-            
-            # Get user
-            cur.execute("""
-                SELECT id, email, password_hash, first_name, last_name, company, 
-                       subscription_tier, revenue_balance
-                FROM users WHERE email = %s
-            """, (email,))
-            
+            cur.execute('SELECT id, password_hash, company_name FROM users WHERE email = %s', (email,))
             user = cur.fetchone()
             
             if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
                 return jsonify({'error': 'Invalid credentials'}), 401
             
-            # Create access token - FIX: Convert user ID to string
-            access_token = create_access_token(identity=str(user['id']))
+            # Create access token
+            access_token = create_access_token(identity=user['id'])
             
             return jsonify({
                 'message': 'Login successful',
                 'access_token': access_token,
                 'user': {
                     'id': user['id'],
-                    'email': user['email'],
-                    'first_name': user['first_name'],
-                    'last_name': user['last_name'],
-                    'company': user['company'],
-                    'subscription_tier': user['subscription_tier'],
-                    'revenue_balance': float(user['revenue_balance'])
+                    'email': email,
+                    'company_name': user['company_name']
                 }
             }), 200
             
-        except Exception as e:
-            logger.error(f"Login error: {e}")
-            return jsonify({'error': f'Login failed: {str(e)}'}), 500
         finally:
             conn.close()
-        
+            
     except Exception as e:
         logger.error(f"Login error: {e}")
-        return jsonify({'error': f'Login failed: {str(e)}'}), 500
+        return jsonify({'error': 'Login failed'}), 500
 
-# User profile routes
-@app.route('/api/user/profile', methods=['GET'])
+# Dashboard routes
+@app.route('/api/dashboard/stats', methods=['GET'])
 @jwt_required()
-def get_profile():
+def get_dashboard_stats():
     try:
-        # FIX: Convert JWT identity back to integer
-        user_id = int(get_jwt_identity())
+        user_id = get_jwt_identity()
         
         conn = get_db_connection()
         if not conn:
@@ -260,47 +569,41 @@ def get_profile():
         try:
             cur = conn.cursor()
             
-            cur.execute("""
-                SELECT id, email, first_name, last_name, company, 
-                       subscription_tier, revenue_balance, created_at
-                FROM users WHERE id = %s
-            """, (user_id,))
+            # Get website count
+            cur.execute('SELECT COUNT(*) as count FROM websites WHERE user_id = %s', (user_id,))
+            website_count = cur.fetchone()['count']
             
-            user = cur.fetchone()
+            # Get total visitors today
+            cur.execute('SELECT COALESCE(SUM(visitors_today), 0) as total FROM websites WHERE user_id = %s', (user_id,))
+            total_visitors = cur.fetchone()['total']
             
-            if not user:
-                return jsonify({'error': 'User not found'}), 404
+            # Get total revenue today
+            cur.execute('SELECT COALESCE(SUM(revenue_today), 0) as total FROM websites WHERE user_id = %s', (user_id,))
+            total_revenue = float(cur.fetchone()['total'])
+            
+            # Get average consent rate
+            cur.execute('SELECT COALESCE(AVG(consent_rate), 0) as avg_rate FROM websites WHERE user_id = %s', (user_id,))
+            avg_consent_rate = float(cur.fetchone()['avg_rate'])
             
             return jsonify({
-                'user': {
-                    'id': user['id'],
-                    'email': user['email'],
-                    'first_name': user['first_name'],
-                    'last_name': user['last_name'],
-                    'company': user['company'],
-                    'subscription_tier': user['subscription_tier'],
-                    'revenue_balance': float(user['revenue_balance']),
-                    'created_at': user['created_at'].isoformat() if user['created_at'] else None
-                }
+                'websites': website_count,
+                'visitors_today': total_visitors,
+                'revenue_today': total_revenue,
+                'consent_rate': round(avg_consent_rate, 2)
             }), 200
             
-        except Exception as e:
-            logger.error(f"Profile error: {e}")
-            return jsonify({'error': f'Failed to get profile: {str(e)}'}), 500
         finally:
             conn.close()
-        
+            
     except Exception as e:
-        logger.error(f"Profile error: {e}")
-        return jsonify({'error': f'Failed to get profile: {str(e)}'}), 500
+        logger.error(f"Dashboard stats error: {e}")
+        return jsonify({'error': 'Failed to fetch dashboard stats'}), 500
 
-# Website management routes
-@app.route('/api/websites', methods=['GET'])
+@app.route('/api/dashboard/websites', methods=['GET'])
 @jwt_required()
 def get_websites():
     try:
-        # FIX: Convert JWT identity back to integer
-        user_id = int(get_jwt_identity())
+        user_id = get_jwt_identity()
         
         conn = get_db_connection()
         if not conn:
@@ -308,16 +611,16 @@ def get_websites():
         
         try:
             cur = conn.cursor()
-            
-            cur.execute("""
-                SELECT id, domain, status, visitors_today, consent_rate, 
-                       revenue_today, created_at
-                FROM websites WHERE user_id = %s
+            cur.execute('''
+                SELECT id, domain, status, visitors_today, consent_rate, revenue_today, created_at
+                FROM websites 
+                WHERE user_id = %s 
                 ORDER BY created_at DESC
-            """, (user_id,))
+            ''', (user_id,))
             
             websites = cur.fetchall()
             
+            # Convert to list of dicts and format
             websites_list = []
             for website in websites:
                 websites_list.append({
@@ -332,30 +635,26 @@ def get_websites():
             
             return jsonify({'websites': websites_list}), 200
             
-        except Exception as e:
-            logger.error(f"Get websites error: {e}")
-            return jsonify({'error': f'Failed to get websites: {str(e)}'}), 500
         finally:
             conn.close()
-        
+            
     except Exception as e:
         logger.error(f"Get websites error: {e}")
-        return jsonify({'error': f'Failed to get websites: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to fetch websites'}), 500
 
-@app.route('/api/websites', methods=['POST'])
+@app.route('/api/dashboard/websites', methods=['POST'])
 @jwt_required()
 def add_website():
     try:
-        # FIX: Convert JWT identity back to integer
-        user_id = int(get_jwt_identity())
+        user_id = get_jwt_identity()
         data = request.get_json()
-        domain = data.get('domain')
+        domain = data.get('domain', '').strip()
         
         if not domain:
             return jsonify({'error': 'Domain is required'}), 400
         
-        # Clean domain (remove protocol, www, trailing slash)
-        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
+        # Remove protocol if present
+        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '')
         
         conn = get_db_connection()
         if not conn:
@@ -364,31 +663,14 @@ def add_website():
         try:
             cur = conn.cursor()
             
-            # Check if domain already exists for this user
-            cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
-            if cur.fetchone():
-                return jsonify({'error': 'Domain already exists'}), 409
-            
             # Generate integration code
-            integration_code = f"""
-<!-- CookieBot.ai Integration Code -->
-<script>
-(function() {{
-    var script = document.createElement('script');
-    script.src = 'https://api.cookiebot.ai/js/cookiebot.js';
-    script.setAttribute('data-website-id', '{uuid.uuid4()}');
-    script.setAttribute('data-domain', '{domain}');
-    document.head.appendChild(script);
-}})();
-</script>
-""".strip()
+            integration_code = f"<script src='https://cookiebot.ai/widget/{uuid.uuid4().hex[:16]}.js'></script>"
             
-            # Add new website
-            cur.execute("""
-                INSERT INTO websites (user_id, domain, integration_code)
-                VALUES (%s, %s, %s)
-                RETURNING id, domain, status, visitors_today, consent_rate, revenue_today, created_at
-            """, (user_id, domain, integration_code))
+            cur.execute('''
+                INSERT INTO websites (user_id, domain, integration_code) 
+                VALUES (%s, %s, %s) 
+                RETURNING id, domain, status, created_at
+            ''', (user_id, domain, integration_code))
             
             website = cur.fetchone()
             conn.commit()
@@ -399,31 +681,27 @@ def add_website():
                     'id': website['id'],
                     'domain': website['domain'],
                     'status': website['status'],
-                    'visitors_today': website['visitors_today'],
-                    'consent_rate': float(website['consent_rate']),
-                    'revenue_today': float(website['revenue_today']),
-                    'integration_code': integration_code
+                    'visitors_today': 0,
+                    'consent_rate': 0.0,
+                    'revenue_today': 0.0,
+                    'created_at': website['created_at'].isoformat()
                 }
             }), 201
             
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Add website error: {e}")
-            return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+        except psycopg2.IntegrityError:
+            return jsonify({'error': 'Website already exists'}), 409
         finally:
             conn.close()
-        
+            
     except Exception as e:
         logger.error(f"Add website error: {e}")
-        return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to add website'}), 500
 
-# Analytics routes
-@app.route('/api/analytics/dashboard', methods=['GET'])
+@app.route('/api/dashboard/analytics', methods=['GET'])
 @jwt_required()
-def get_dashboard_analytics():
+def get_analytics():
     try:
-        # FIX: Convert JWT identity back to integer
-        user_id = int(get_jwt_identity())
+        user_id = get_jwt_identity()
         
         conn = get_db_connection()
         if not conn:
@@ -432,190 +710,49 @@ def get_dashboard_analytics():
         try:
             cur = conn.cursor()
             
-            # Get user's total revenue
-            cur.execute("""
-                SELECT COALESCE(revenue_balance, 0) as total_revenue
-                FROM users WHERE id = %s
-            """, (user_id,))
-            revenue_result = cur.fetchone()
-            total_revenue = float(revenue_result['total_revenue']) if revenue_result else 0.0
+            # Get recent analytics events
+            cur.execute('''
+                SELECT ae.event_type, ae.consent_given, ae.revenue_generated, ae.created_at, w.domain
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s
+                ORDER BY ae.created_at DESC
+                LIMIT 100
+            ''', (user_id,))
             
-            # Get total visitors (sum of all websites)
-            cur.execute("""
-                SELECT COALESCE(SUM(visitors_today), 0) as total_visitors
-                FROM websites WHERE user_id = %s
-            """, (user_id,))
-            visitors_result = cur.fetchone()
-            total_visitors = visitors_result['total_visitors'] if visitors_result else 0
+            events = cur.fetchall()
             
-            # Get average consent rate
-            cur.execute("""
-                SELECT COALESCE(AVG(consent_rate), 0) as avg_consent_rate
-                FROM websites WHERE user_id = %s AND visitors_today > 0
-            """, (user_id,))
-            consent_result = cur.fetchone()
-            avg_consent_rate = float(consent_result['avg_consent_rate']) if consent_result else 0.0
+            # Convert to list of dicts
+            events_list = []
+            for event in events:
+                events_list.append({
+                    'event_type': event['event_type'],
+                    'consent_given': event['consent_given'],
+                    'revenue_generated': float(event['revenue_generated']),
+                    'domain': event['domain'],
+                    'created_at': event['created_at'].isoformat() if event['created_at'] else None
+                })
             
-            # Get website count
-            cur.execute("""
-                SELECT COUNT(*) as website_count
-                FROM websites WHERE user_id = %s
-            """, (user_id,))
-            count_result = cur.fetchone()
-            website_count = count_result['website_count'] if count_result else 0
+            return jsonify({'events': events_list}), 200
             
-            return jsonify({
-                'revenue': total_revenue,
-                'visitors': total_visitors,
-                'consent_rate': avg_consent_rate,
-                'websites': website_count
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Analytics error: {e}")
-            return jsonify({'error': f'Failed to get analytics: {str(e)}'}), 500
         finally:
             conn.close()
-        
+            
     except Exception as e:
-        logger.error(f"Analytics error: {e}")
-        return jsonify({'error': f'Failed to get analytics: {str(e)}'}), 500
-
-# Public tracking route (no auth required)
-@app.route('/api/public/track', methods=['POST'])
-def track_event():
-    try:
-        data = request.get_json()
-        website_id = data.get('website_id')
-        event_type = data.get('event_type', 'page_view')
-        visitor_id = data.get('visitor_id')
-        consent_given = data.get('consent_given')
-        
-        if not website_id:
-            return jsonify({'error': 'Website ID is required'}), 400
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            
-            # Calculate revenue (example: $0.01 per visitor, $0.05 if consent given)
-            revenue = 0.05 if consent_given else 0.01
-            
-            # Insert analytics event
-            cur.execute("""
-                INSERT INTO analytics_events (website_id, event_type, visitor_id, consent_given, revenue_generated, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (website_id, event_type, visitor_id, consent_given, revenue, json.dumps(data)))
-            
-            event_id = cur.fetchone()['id']
-            
-            # Update website stats
-            cur.execute("""
-                UPDATE websites 
-                SET visitors_today = visitors_today + 1,
-                    revenue_today = revenue_today + %s,
-                    consent_rate = (
-                        SELECT COALESCE(AVG(CASE WHEN consent_given THEN 100.0 ELSE 0.0 END), 0)
-                        FROM analytics_events 
-                        WHERE website_id = %s AND created_at >= CURRENT_DATE
-                    )
-                WHERE id = %s
-            """, (revenue, website_id, website_id))
-            
-            conn.commit()
-            
-            return jsonify({
-                'message': 'Event tracked successfully',
-                'event_id': event_id,
-                'revenue_generated': revenue
-            }), 200
-            
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Tracking error: {e}")
-            return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
-        finally:
-            conn.close()
-        
-    except Exception as e:
-        logger.error(f"Tracking error: {e}")
-        return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
-
-# Health check endpoint
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    try:
-        # Test database connection
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({
-                'status': 'unhealthy',
-                'database': 'disconnected',
-                'timestamp': datetime.utcnow().isoformat()
-            }), 500
-        
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1 as test, version() as db_version")
-            result = cur.fetchone()
-            cur.close()
-            conn.close()
-            
-            return jsonify({
-                'status': 'healthy',
-                'timestamp': datetime.utcnow().isoformat(),
-                'database': 'connected',
-                'database_version': result['db_version'][:100] if result else 'unknown',
-                'environment_vars': {
-                    'DATABASE_URL': bool(os.environ.get('DATABASE_URL')),
-                    'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
-                    'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
-                }
-            }), 200
-            
-        except Exception as e:
-            conn.close()
-            logger.error(f"Health check database error: {e}")
-            return jsonify({
-                'status': 'unhealthy',
-                'timestamp': datetime.utcnow().isoformat(),
-                'database': 'disconnected',
-                'error': str(e)
-            }), 500
-        
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return jsonify({
-            'status': 'unhealthy',
-            'timestamp': datetime.utcnow().isoformat(),
-            'error': str(e)
-        }), 500
+        logger.error(f"Get analytics error: {e}")
+        return jsonify({'error': 'Failed to fetch analytics'}), 500
 
 # Root endpoint
 @app.route('/', methods=['GET'])
 def root():
     return jsonify({
         'message': 'CookieBot.ai Backend API',
-        'version': '2.0.0',
+        'version': '1.0.0',
         'status': 'running',
         'endpoints': {
-            'health': '/api/health',
-            'auth': {
-                'register': '/api/auth/register',
-                'login': '/api/auth/login'
-            },
-            'user': {
-                'profile': '/api/user/profile'
-            },
-            'websites': '/api/websites',
-            'analytics': {
-                'dashboard': '/api/analytics/dashboard'
-            },
-            'tracking': '/api/public/track'
+            'auth': ['/api/auth/register', '/api/auth/login'],
+            'dashboard': ['/api/dashboard/stats', '/api/dashboard/websites', '/api/dashboard/analytics'],
+            'compliance': ['/api/compliance/demo-scan', '/api/compliance/real-scan', '/api/compliance/health']
         }
     }), 200
 
@@ -632,11 +769,11 @@ def demo_compliance_scan():
             return jsonify({'error': 'URL is required'}), 400
         
         # Normalize URL
-        if not url.startswith(('http://', 'https://' )):
+        if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
         
         from urllib.parse import urlparse
-        domain = urlparse(url ).netloc
+        domain = urlparse(url).netloc
         
         # Generate realistic demo results
         demo_results = {
@@ -653,16 +790,16 @@ def demo_compliance_scan():
                     'severity': 'critical',
                     'title': 'Missing Cookie Consent Banner',
                     'description': 'No cookie consent banner was detected on the website.',
-                    'recommendation': 'Implement a GDPR-compliant cookie consent banner that appears before any tracking cookies are set.',
+                    'recommendation': 'Implement a GDPR-compliant cookie consent banner.',
                     'regulation': 'gdpr',
                     'article': 'Article 7'
                 },
                 {
                     'type': 'tracking_without_consent',
                     'severity': 'critical',
-                    'title': 'Tracking Cookies Set Without Consent',
-                    'description': 'Google Analytics and other tracking scripts are loading without user consent.',
-                    'recommendation': 'Ensure all non-essential cookies are only set after explicit user consent.',
+                    'title': 'Tracking Scripts Loading Without Consent',
+                    'description': 'Found tracking scripts that may load without user consent.',
+                    'recommendation': 'Ensure all non-essential cookies and tracking scripts are only loaded after explicit user consent.',
                     'regulation': 'gdpr',
                     'article': 'Article 7'
                 },
@@ -670,19 +807,19 @@ def demo_compliance_scan():
                     'type': 'missing_privacy_policy',
                     'severity': 'high',
                     'title': 'Privacy Policy Not Easily Accessible',
-                    'description': 'Privacy policy link is not prominently displayed in the website footer.',
-                    'recommendation': 'Add a clearly visible privacy policy link in the footer and ensure it covers all data processing activities.',
+                    'description': 'Privacy policy link is not prominently displayed.',
+                    'recommendation': 'Add a clearly visible privacy policy link.',
                     'regulation': 'gdpr',
                     'article': 'Article 13'
                 },
                 {
-                    'type': 'google_analytics_without_consent',
-                    'severity': 'high',
-                    'title': 'Google Analytics Loading Without Consent',
-                    'description': 'Google Analytics is loading before user consent is obtained.',
-                    'recommendation': 'Configure Google Analytics to load only after user consent for analytics cookies.',
+                    'type': 'cookie_categorization',
+                    'severity': 'medium',
+                    'title': 'Improper Cookie Categorization',
+                    'description': 'Cookies are not properly categorized by purpose.',
+                    'recommendation': 'Categorize all cookies as necessary, statistics, marketing, or preferences.',
                     'regulation': 'gdpr',
-                    'article': 'Article 6'
+                    'article': 'Article 7'
                 }
             ],
             'cookies': [
@@ -696,7 +833,7 @@ def demo_compliance_scan():
                 },
                 {
                     'name': '_gid',
-                    'category': 'statistics', 
+                    'category': 'statistics',
                     'purpose': 'Google Analytics - Used to distinguish users',
                     'domain': domain,
                     'secure': False,
@@ -760,11 +897,106 @@ def demo_compliance_scan():
             }
         }
         
-        return jsonify(demo_results ), 200
+        return jsonify(demo_results), 200
         
     except Exception as e:
         logger.error(f"Error in demo scan: {e}")
         return jsonify({'error': 'Demo scan failed'}), 500
+
+@app.route('/api/compliance/real-scan', methods=['POST'])
+def start_real_compliance_scan():
+    """Start a real compliance scan that actually analyzes the website"""
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        email = data.get('email', '').strip()
+        
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+        
+        # Normalize URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # Generate scan ID
+        scan_id = f'real_{int(time.time())}_{hash(url) % 10000}'
+        
+        # Initialize scan status
+        active_scans[scan_id] = {
+            'status': 'pending',
+            'progress': 0,
+            'message': 'Initializing scan...',
+            'url': url,
+            'email': email,
+            'started_at': datetime.utcnow().isoformat(),
+            'results': None
+        }
+        
+        # Start scan in background thread
+        def run_scan():
+            try:
+                def progress_callback(progress, message):
+                    if scan_id in active_scans:
+                        active_scans[scan_id]['progress'] = progress
+                        active_scans[scan_id]['message'] = message
+                
+                active_scans[scan_id]['status'] = 'running'
+                results = real_analyzer.analyze_website(url, progress_callback)
+                
+                if scan_id in active_scans:
+                    active_scans[scan_id]['status'] = 'completed'
+                    active_scans[scan_id]['results'] = results
+                    active_scans[scan_id]['completed_at'] = datetime.utcnow().isoformat()
+                
+            except Exception as e:
+                if scan_id in active_scans:
+                    active_scans[scan_id]['status'] = 'failed'
+                    active_scans[scan_id]['error'] = str(e)
+                logger.error(f"Real scan failed for {url}: {e}")
+        
+        # Start scan thread
+        scan_thread = threading.Thread(target=run_scan)
+        scan_thread.daemon = True
+        scan_thread.start()
+        
+        return jsonify({
+            'scan_id': scan_id,
+            'status': 'started',
+            'message': 'Real compliance scan started. This may take 30-60 seconds.',
+            'estimated_time': '30-60 seconds'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error starting real scan: {e}")
+        return jsonify({'error': 'Failed to start scan'}), 500
+
+@app.route('/api/compliance/real-scan/<scan_id>/status', methods=['GET'])
+def get_real_scan_status(scan_id):
+    """Get the status of a real compliance scan"""
+    try:
+        if scan_id not in active_scans:
+            return jsonify({'error': 'Scan not found'}), 404
+        
+        scan_data = active_scans[scan_id]
+        
+        response = {
+            'scan_id': scan_id,
+            'status': scan_data['status'],
+            'progress': scan_data['progress'],
+            'message': scan_data['message'],
+            'url': scan_data['url']
+        }
+        
+        if scan_data['status'] == 'completed' and scan_data['results']:
+            response['results'] = scan_data['results']
+        elif scan_data['status'] == 'failed':
+            response['error'] = scan_data.get('error', 'Scan failed')
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting scan status: {e}")
+        return jsonify({'error': 'Failed to get scan status'}), 500
 
 @app.route('/api/compliance/health', methods=['GET'])
 def compliance_health_check():
