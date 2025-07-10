@@ -9,12 +9,7 @@ from datetime import datetime, timedelta
 import uuid
 import json
 import logging
-import threading
-from bs4 import BeautifulSoup
-import requests
-from urllib.parse import urljoin, urlparse
-import re
-import time
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
