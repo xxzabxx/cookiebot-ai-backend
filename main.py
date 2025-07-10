@@ -1,137 +1,90 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import bcrypt
-from datetime import datetime, timedelta
-import uuid
-import json
-import logging
-import requests
-import threading
+import sqlite3
+import hashlib
 import time
+import threading
+import requests
 import re
-from urllib.parse import urljoin, urlparse
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
+import logging
+import traceback
+import sys
 
-# Try to import BeautifulSoup with fallback
+# Configure comprehensive logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Try to import BeautifulSoup
 try:
     from bs4 import BeautifulSoup
     BS4_AVAILABLE = True
+    logger.info("BeautifulSoup4 is available")
 except ImportError:
     BS4_AVAILABLE = False
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+    logger.warning("BeautifulSoup4 not available, using fallback parsing")
 
 app = Flask(__name__)
+CORS(app)
 
-# Configuration
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-jwt-secret-change-in-production')
+# JWT Configuration
+app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
-
-# Initialize extensions
 jwt = JWTManager(app)
-CORS(app, origins=["*"])  # Allow all origins for development
 
-# Database connection
-def get_db_connection():
-    try:
-        conn = psycopg2.connect(
-            os.environ.get('DATABASE_URL'),
-            cursor_factory=RealDictCursor
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        return None
+# Global variables for scan storage
+scan_results = {}
+scan_status = {}
 
-# Initialize database tables
 def init_db():
-    conn = get_db_connection()
-    if not conn:
-        logger.error("Failed to connect to database")
-        return False
-    
+    """Initialize the database with required tables"""
     try:
-        cur = conn.cursor()
+        logger.info("Initializing database...")
+        conn = sqlite3.connect('cookiebot.db')
+        cursor = conn.cursor()
         
-        # Users table
-        cur.execute('''
+        # Create users table
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
-                company_name VARCHAR(255),
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # Websites table
-        cur.execute('''
+        # Create websites table
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS websites (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                domain VARCHAR(255) NOT NULL,
-                status VARCHAR(50) DEFAULT 'pending',
-                visitors_today INTEGER DEFAULT 0,
-                consent_rate DECIMAL(5,2) DEFAULT 0.00,
-                revenue_today DECIMAL(10,2) DEFAULT 0.00,
-                integration_code TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, domain)
-            )
-        ''')
-        
-        # Analytics events table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS analytics_events (
-                id SERIAL PRIMARY KEY,
-                website_id INTEGER REFERENCES websites(id) ON DELETE CASCADE,
-                event_type VARCHAR(100) NOT NULL,
-                visitor_id VARCHAR(255),
-                consent_given BOOLEAN,
-                revenue_generated DECIMAL(10,2) DEFAULT 0.00,
-                metadata JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Compliance scans table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS compliance_scans (
-                id SERIAL PRIMARY KEY,
-                website_id INTEGER REFERENCES websites(id) ON DELETE CASCADE,
-                scan_type VARCHAR(100) NOT NULL,
-                status VARCHAR(50) DEFAULT 'pending',
-                results JSONB,
-                recommendations TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                domain TEXT NOT NULL,
+                last_scan TIMESTAMP,
+                compliance_score INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
         
         conn.commit()
+        conn.close()
         logger.info("Database tables initialized successfully")
-        return True
-        
     except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-        conn.rollback()
-        return False
-    finally:
-        if conn:
-            conn.close()
+        logger.error(f"Database initialization failed: {str(e)}")
+        logger.error(traceback.format_exc())
 
-# Initialize database on startup
-init_db()
-
-class RealWebsiteAnalyzer:
-    """Real website analyzer that actually scans websites for compliance issues"""
+class DebugRealWebsiteAnalyzer:
+    """Debug version of RealWebsiteAnalyzer with comprehensive logging"""
     
     def __init__(self):
+        logger.info("Initializing DebugRealWebsiteAnalyzer")
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -160,56 +113,107 @@ class RealWebsiteAnalyzer:
             'PHPSESSID': {'category': 'necessary', 'purpose': 'Session management - Required for website functionality'},
             'JSESSIONID': {'category': 'necessary', 'purpose': 'Session management - Required for website functionality'}
         }
+        logger.info("DebugRealWebsiteAnalyzer initialized successfully")
 
     def analyze_website(self, url, progress_callback=None):
-        """Analyze a website for compliance issues"""
+        """Analyze a website for compliance issues with comprehensive logging"""
+        scan_id = f'debug_{int(time.time())}'
+        logger.info(f"[{scan_id}] Starting website analysis for: {url}")
+        
         try:
             # Normalize URL
+            original_url = url
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
+                logger.info(f"[{scan_id}] Normalized URL from '{original_url}' to '{url}'")
             
             domain = urlparse(url).netloc
+            logger.info(f"[{scan_id}] Extracted domain: {domain}")
             
             if progress_callback:
                 progress_callback(10, "Fetching website content...")
             
-            # Fetch the main page with timeout
-            response = self.session.get(url, timeout=15, allow_redirects=True)
-            response.raise_for_status()
+            # Test basic connectivity first
+            logger.info(f"[{scan_id}] Testing connectivity to {url}")
+            try:
+                # Fetch the main page with timeout
+                logger.info(f"[{scan_id}] Making HTTP request with 15s timeout...")
+                response = self.session.get(url, timeout=15, allow_redirects=True)
+                logger.info(f"[{scan_id}] HTTP Response: {response.status_code} - {len(response.content)} bytes")
+                logger.info(f"[{scan_id}] Response headers: {dict(response.headers)}")
+                response.raise_for_status()
+                
+            except requests.exceptions.Timeout:
+                logger.error(f"[{scan_id}] Request timeout after 15 seconds")
+                raise Exception("Website request timed out - website may be slow or unreachable")
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"[{scan_id}] Connection error: {str(e)}")
+                raise Exception(f"Cannot connect to website: {str(e)}")
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"[{scan_id}] HTTP error: {str(e)}")
+                raise Exception(f"Website returned error: {str(e)}")
+            except Exception as e:
+                logger.error(f"[{scan_id}] Unexpected request error: {str(e)}")
+                raise Exception(f"Failed to fetch website: {str(e)}")
             
             if progress_callback:
                 progress_callback(30, "Analyzing website structure...")
             
-            # Parse HTML if BeautifulSoup is available
+            # Parse HTML
+            logger.info(f"[{scan_id}] Starting HTML parsing...")
             if BS4_AVAILABLE:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                scripts = self._analyze_scripts(soup, domain)
-                consent_banner = self._check_consent_banner(soup)
-                privacy_policy = self._check_privacy_policy(soup, url)
+                logger.info(f"[{scan_id}] Using BeautifulSoup for parsing")
+                try:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    logger.info(f"[{scan_id}] BeautifulSoup parsing successful")
+                    scripts = self._analyze_scripts(soup, domain, scan_id)
+                    consent_banner = self._check_consent_banner(soup, scan_id)
+                    privacy_policy = self._check_privacy_policy(soup, url, scan_id)
+                except Exception as e:
+                    logger.error(f"[{scan_id}] BeautifulSoup parsing failed: {str(e)}")
+                    logger.info(f"[{scan_id}] Falling back to regex parsing")
+                    scripts = self._analyze_scripts_fallback(response.text, domain, scan_id)
+                    consent_banner = self._check_consent_banner_fallback(response.text, scan_id)
+                    privacy_policy = self._check_privacy_policy_fallback(response.text, scan_id)
             else:
-                # Fallback analysis without BeautifulSoup
-                scripts = self._analyze_scripts_fallback(response.text, domain)
-                consent_banner = self._check_consent_banner_fallback(response.text)
-                privacy_policy = self._check_privacy_policy_fallback(response.text)
+                logger.info(f"[{scan_id}] Using fallback regex parsing")
+                scripts = self._analyze_scripts_fallback(response.text, domain, scan_id)
+                consent_banner = self._check_consent_banner_fallback(response.text, scan_id)
+                privacy_policy = self._check_privacy_policy_fallback(response.text, scan_id)
             
             if progress_callback:
                 progress_callback(50, "Detecting cookies...")
             
             # Analyze cookies
-            cookies = self._analyze_cookies(response, domain)
+            logger.info(f"[{scan_id}] Starting cookie analysis...")
+            cookies = self._analyze_cookies(response, domain, scan_id)
             
             if progress_callback:
                 progress_callback(70, "Checking compliance...")
             
             # Generate compliance report
-            issues = self._generate_compliance_issues(cookies, scripts, consent_banner, privacy_policy, domain)
-            compliance_score = self._calculate_compliance_score(issues)
+            logger.info(f"[{scan_id}] Generating compliance report...")
+            issues = self._generate_compliance_issues(cookies, scripts, consent_banner, privacy_policy, domain, scan_id)
+            compliance_score = self._calculate_compliance_score(issues, scan_id)
             
             if progress_callback:
                 progress_callback(100, "Generating compliance report...")
             
-            return {
-                'scan_id': f'real_{int(time.time())}',
+            # Calculate revenue estimates
+            monthly_earnings = max(100, compliance_score * 10)
+            annual_earnings = max(1200, compliance_score * 120)
+            
+            logger.info(f"[{scan_id}] Analysis completed successfully!")
+            logger.info(f"[{scan_id}] Results summary:")
+            logger.info(f"[{scan_id}] - Compliance Score: {compliance_score}/100")
+            logger.info(f"[{scan_id}] - Cookies Found: {len(cookies)}")
+            logger.info(f"[{scan_id}] - Scripts Found: {len(scripts)}")
+            logger.info(f"[{scan_id}] - Issues Found: {len(issues)}")
+            logger.info(f"[{scan_id}] - Monthly Earnings: ${monthly_earnings}")
+            logger.info(f"[{scan_id}] - Annual Earnings: ${annual_earnings}")
+            
+            result = {
+                'scan_id': scan_id,
                 'url': url,
                 'domain': domain,
                 'status': 'completed',
@@ -221,10 +225,10 @@ class RealWebsiteAnalyzer:
                 'scripts': scripts,
                 'consent_banner': consent_banner,
                 'privacy_policy': privacy_policy,
-                'potential_earnings': max(100, compliance_score * 10),
-                'annual_earnings': max(1200, compliance_score * 120),
+                'potential_earnings': monthly_earnings,
+                'annual_earnings': annual_earnings,
                 'revenue_note': 'Revenue estimates are projections based on industry averages and website analysis. Actual earnings may vary.',
-                'compliance_breakdown': self._get_compliance_breakdown(issues),
+                'compliance_breakdown': self._get_compliance_breakdown(issues, scan_id),
                 'recommendations': [
                     'Implement CookieBot.ai for instant GDPR compliance',
                     'Start earning revenue from your consent banner today',
@@ -233,676 +237,607 @@ class RealWebsiteAnalyzer:
                 ]
             }
             
-        except requests.RequestException as e:
-            raise Exception(f"Failed to fetch website: {str(e)}")
+            logger.info(f"[{scan_id}] Returning complete analysis result")
+            return result
+            
         except Exception as e:
-            raise Exception(f"Analysis failed: {str(e)}")
-
-    def _analyze_cookies(self, response, domain):
-        """Analyze cookies set by the website"""
-        cookies = []
-        
-        for cookie in response.cookies:
-            cookie_info = {
-                'name': cookie.name,
-                'domain': cookie.domain or domain,
-                'secure': cookie.secure,
-                'http_only': hasattr(cookie, 'httponly') and cookie.httponly,
-                'category': 'unknown',
-                'purpose': 'Unknown purpose'
+            logger.error(f"[{scan_id}] Analysis failed with error: {str(e)}")
+            logger.error(f"[{scan_id}] Full traceback: {traceback.format_exc()}")
+            
+            # Return a proper error result instead of empty data
+            error_result = {
+                'scan_id': scan_id,
+                'url': url,
+                'domain': urlparse(url).netloc if url else 'unknown',
+                'status': 'error',
+                'progress': 100,
+                'compliance_score': 0,
+                'scan_completed_at': datetime.utcnow().isoformat(),
+                'error': str(e),
+                'issues': [],
+                'cookies': [],
+                'scripts': [],
+                'consent_banner': {'detected': False, 'type': 'none'},
+                'privacy_policy': {'detected': False, 'url': None},
+                'potential_earnings': 0,
+                'annual_earnings': 0,
+                'revenue_note': 'Analysis failed - unable to calculate revenue estimates.',
+                'compliance_breakdown': {'gdpr': 0, 'ccpa': 0, 'lgpd': 0},
+                'recommendations': [
+                    'Please check if the website URL is correct and accessible',
+                    'Ensure the website is publicly available',
+                    'Try again in a few minutes'
+                ]
             }
             
-            # Categorize cookie based on name patterns
-            for pattern, info in self.cookie_patterns.items():
-                if pattern in cookie.name.lower():
-                    cookie_info['category'] = info['category']
-                    cookie_info['purpose'] = info['purpose']
-                    break
-            
-            cookies.append(cookie_info)
-        
-        return cookies
+            logger.info(f"[{scan_id}] Returning error result")
+            return error_result
 
-    def _analyze_scripts(self, soup, domain):
+    def _analyze_cookies(self, response, domain, scan_id):
+        """Analyze cookies set by the website"""
+        logger.info(f"[{scan_id}] Analyzing cookies...")
+        cookies = []
+        
+        try:
+            cookie_count = len(response.cookies)
+            logger.info(f"[{scan_id}] Found {cookie_count} cookies in response")
+            
+            for cookie in response.cookies:
+                logger.info(f"[{scan_id}] Processing cookie: {cookie.name}")
+                cookie_info = {
+                    'name': cookie.name,
+                    'domain': cookie.domain or domain,
+                    'secure': cookie.secure,
+                    'http_only': hasattr(cookie, 'httponly') and cookie.httponly,
+                    'category': 'unknown',
+                    'purpose': 'Unknown purpose'
+                }
+                
+                # Categorize cookie based on name patterns
+                for pattern, info in self.cookie_patterns.items():
+                    if pattern in cookie.name.lower():
+                        cookie_info['category'] = info['category']
+                        cookie_info['purpose'] = info['purpose']
+                        logger.info(f"[{scan_id}] Categorized cookie {cookie.name} as {info['category']}")
+                        break
+                
+                cookies.append(cookie_info)
+            
+            logger.info(f"[{scan_id}] Cookie analysis completed: {len(cookies)} cookies processed")
+            return cookies
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Cookie analysis failed: {str(e)}")
+            return []
+
+    def _analyze_scripts(self, soup, domain, scan_id):
         """Analyze external scripts for tracking services (with BeautifulSoup)"""
+        logger.info(f"[{scan_id}] Analyzing scripts with BeautifulSoup...")
         scripts = []
         
-        # Find all script tags
-        script_tags = soup.find_all('script', src=True)
+        try:
+            # Find all script tags
+            script_tags = soup.find_all('script', src=True)
+            logger.info(f"[{scan_id}] Found {len(script_tags)} script tags with src attribute")
+            
+            for script in script_tags:
+                src = script.get('src', '')
+                if src:
+                    logger.info(f"[{scan_id}] Processing script: {src}")
+                    script_info = self._categorize_script(src, domain, scan_id)
+                    if script_info['tracking_service'] != 'unknown':
+                        scripts.append(script_info)
+                        logger.info(f"[{scan_id}] Added tracking script: {script_info['tracking_service']}")
+            
+            logger.info(f"[{scan_id}] Script analysis completed: {len(scripts)} tracking scripts found")
+            return scripts
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Script analysis failed: {str(e)}")
+            return []
+
+    def _analyze_scripts_fallback(self, html_content, domain, scan_id):
+        """Analyze scripts without BeautifulSoup (fallback)"""
+        logger.info(f"[{scan_id}] Analyzing scripts with regex fallback...")
+        scripts = []
         
-        for script in script_tags:
-            src = script.get('src', '')
-            if src:
-                script_info = self._categorize_script(src, domain)
+        try:
+            # Use regex to find script tags
+            script_pattern = r'<script[^>]*src=["\']([^"\']+)["\'][^>]*>'
+            matches = re.findall(script_pattern, html_content, re.IGNORECASE)
+            logger.info(f"[{scan_id}] Found {len(matches)} script sources via regex")
+            
+            for src in matches:
+                logger.info(f"[{scan_id}] Processing script: {src}")
+                script_info = self._categorize_script(src, domain, scan_id)
                 if script_info['tracking_service'] != 'unknown':
                     scripts.append(script_info)
-        
-        return scripts
+                    logger.info(f"[{scan_id}] Added tracking script: {script_info['tracking_service']}")
+            
+            logger.info(f"[{scan_id}] Fallback script analysis completed: {len(scripts)} tracking scripts found")
+            return scripts
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Fallback script analysis failed: {str(e)}")
+            return []
 
-    def _analyze_scripts_fallback(self, html_content, domain):
-        """Analyze scripts without BeautifulSoup (fallback)"""
-        scripts = []
-        
-        # Use regex to find script tags
-        script_pattern = r'<script[^>]*src=["\']([^"\']+)["\'][^>]*>'
-        matches = re.findall(script_pattern, html_content, re.IGNORECASE)
-        
-        for src in matches:
-            script_info = self._categorize_script(src, domain)
-            if script_info['tracking_service'] != 'unknown':
-                scripts.append(script_info)
-        
-        return scripts
-
-    def _categorize_script(self, src, domain):
+    def _categorize_script(self, src, domain, scan_id):
         """Categorize a script based on its source"""
         # Make relative URLs absolute
         if src.startswith('//'):
             src = 'https:' + src
         elif src.startswith('/'):
-            src = f"https://{domain}" + src
+            src = f'https://{domain}' + src
         
         script_info = {
-            'type': 'external',
             'src': src,
             'tracking_service': 'unknown',
             'category': 'unknown',
-            'consent_gated': False
+            'risk_level': 'low'
         }
         
-        # Check if it's a known tracking service
-        for tracker_domain, info in self.tracking_scripts.items():
-            if tracker_domain in src:
-                script_info['tracking_service'] = info['service']
-                script_info['category'] = info['category']
+        # Check against known tracking services
+        for service_domain, service_info in self.tracking_scripts.items():
+            if service_domain in src:
+                script_info['tracking_service'] = service_info['service']
+                script_info['category'] = service_info['category']
+                script_info['risk_level'] = 'high' if service_info['category'] == 'marketing' else 'medium'
+                logger.info(f"[{scan_id}] Identified tracking service: {service_info['service']}")
                 break
         
         return script_info
 
-    def _check_consent_banner(self, soup):
-        """Check for cookie consent banner (with BeautifulSoup)"""
-        consent_indicators = ['cookie', 'consent', 'privacy', 'gdpr', 'accept']
+    def _check_consent_banner(self, soup, scan_id):
+        """Check for consent banner (with BeautifulSoup)"""
+        logger.info(f"[{scan_id}] Checking for consent banner with BeautifulSoup...")
         
-        # Check for common consent banner elements
-        for element in soup.find_all(['div', 'section', 'aside']):
-            classes = ' '.join(element.get('class', [])).lower()
-            element_id = element.get('id', '').lower()
-            text_content = element.get_text().lower()
+        try:
+            # Look for common consent banner indicators
+            consent_indicators = [
+                'cookie', 'consent', 'privacy', 'gdpr', 'accept', 'decline',
+                'cookiebot', 'onetrust', 'cookielaw', 'cookiepro'
+            ]
             
-            if any(indicator in classes or indicator in element_id or indicator in text_content 
-                   for indicator in consent_indicators):
-                return {'present': True, 'type': 'detected', 'compliant': True}
-        
-        return {'present': False, 'type': 'none', 'compliant': False}
-
-    def _check_consent_banner_fallback(self, html_content):
-        """Check for consent banner without BeautifulSoup (fallback)"""
-        consent_indicators = ['cookie', 'consent', 'privacy', 'gdpr', 'accept']
-        html_lower = html_content.lower()
-        
-        if any(indicator in html_lower for indicator in consent_indicators):
-            return {'present': True, 'type': 'detected', 'compliant': True}
-        
-        return {'present': False, 'type': 'none', 'compliant': False}
-
-    def _check_privacy_policy(self, soup, base_url):
-        """Check for privacy policy link (with BeautifulSoup)"""
-        privacy_indicators = ['privacy', 'policy', 'legal']
-        privacy_links = []
-        
-        for link in soup.find_all('a', href=True):
-            link_text = link.get_text().lower()
-            link_href = link.get('href', '').lower()
+            # Check for elements with consent-related text or classes
+            for indicator in consent_indicators:
+                elements = soup.find_all(text=re.compile(indicator, re.IGNORECASE))
+                if elements:
+                    logger.info(f"[{scan_id}] Found consent banner indicator: {indicator}")
+                    return {'detected': True, 'type': 'basic', 'indicator': indicator}
             
-            if any(indicator in link_text or indicator in link_href for indicator in privacy_indicators):
-                privacy_links.append({
-                    'text': link.get_text().strip(),
-                    'href': urljoin(base_url, link.get('href'))
-                })
-        
-        return {
-            'links_found': len(privacy_links),
-            'links': privacy_links[:3],
-            'accessible': len(privacy_links) > 0
-        }
+            logger.info(f"[{scan_id}] No consent banner detected")
+            return {'detected': False, 'type': 'none'}
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Consent banner check failed: {str(e)}")
+            return {'detected': False, 'type': 'none'}
 
-    def _check_privacy_policy_fallback(self, html_content):
-        """Check for privacy policy without BeautifulSoup (fallback)"""
-        privacy_indicators = ['privacy policy', 'privacy', 'legal']
-        html_lower = html_content.lower()
+    def _check_consent_banner_fallback(self, html_content, scan_id):
+        """Check for consent banner (fallback)"""
+        logger.info(f"[{scan_id}] Checking for consent banner with regex fallback...")
         
-        found_count = sum(1 for indicator in privacy_indicators if indicator in html_lower)
-        
-        return {
-            'links_found': found_count,
-            'links': [],
-            'accessible': found_count > 0
-        }
+        try:
+            consent_patterns = [
+                r'cookie.*consent',
+                r'accept.*cookie',
+                r'privacy.*policy',
+                r'gdpr.*compliance'
+            ]
+            
+            for pattern in consent_patterns:
+                if re.search(pattern, html_content, re.IGNORECASE):
+                    logger.info(f"[{scan_id}] Found consent banner pattern: {pattern}")
+                    return {'detected': True, 'type': 'basic', 'pattern': pattern}
+            
+            logger.info(f"[{scan_id}] No consent banner detected")
+            return {'detected': False, 'type': 'none'}
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Fallback consent banner check failed: {str(e)}")
+            return {'detected': False, 'type': 'none'}
 
-    def _generate_compliance_issues(self, cookies, scripts, consent_banner, privacy_policy, domain):
+    def _check_privacy_policy(self, soup, url, scan_id):
+        """Check for privacy policy (with BeautifulSoup)"""
+        logger.info(f"[{scan_id}] Checking for privacy policy with BeautifulSoup...")
+        
+        try:
+            # Look for privacy policy links
+            privacy_links = soup.find_all('a', href=True)
+            for link in privacy_links:
+                href = link.get('href', '').lower()
+                text = link.get_text().lower()
+                
+                if 'privacy' in href or 'privacy' in text:
+                    logger.info(f"[{scan_id}] Found privacy policy link: {href}")
+                    return {'detected': True, 'url': href}
+            
+            logger.info(f"[{scan_id}] No privacy policy link found")
+            return {'detected': False, 'url': None}
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Privacy policy check failed: {str(e)}")
+            return {'detected': False, 'url': None}
+
+    def _check_privacy_policy_fallback(self, html_content, scan_id):
+        """Check for privacy policy (fallback)"""
+        logger.info(f"[{scan_id}] Checking for privacy policy with regex fallback...")
+        
+        try:
+            privacy_pattern = r'<a[^>]*href=["\']([^"\']*privacy[^"\']*)["\'][^>]*>'
+            match = re.search(privacy_pattern, html_content, re.IGNORECASE)
+            
+            if match:
+                privacy_url = match.group(1)
+                logger.info(f"[{scan_id}] Found privacy policy URL: {privacy_url}")
+                return {'detected': True, 'url': privacy_url}
+            
+            logger.info(f"[{scan_id}] No privacy policy link found")
+            return {'detected': False, 'url': None}
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Fallback privacy policy check failed: {str(e)}")
+            return {'detected': False, 'url': None}
+
+    def _generate_compliance_issues(self, cookies, scripts, consent_banner, privacy_policy, domain, scan_id):
         """Generate compliance issues based on analysis"""
+        logger.info(f"[{scan_id}] Generating compliance issues...")
         issues = []
         
-        # Check for consent banner
-        if not consent_banner['present']:
-            issues.append({
-                'type': 'missing_consent_banner',
-                'severity': 'critical',
-                'title': 'Missing Cookie Consent Banner',
-                'description': 'No cookie consent banner was detected on the website.',
-                'recommendation': 'Implement a GDPR-compliant cookie consent banner.',
-                'regulation': 'gdpr',
-                'article': 'Article 7'
-            })
-        
-        # Check for tracking without consent
-        tracking_scripts = [s for s in scripts if s['category'] in ['statistics', 'marketing']]
-        if tracking_scripts and not consent_banner['present']:
-            issues.append({
-                'type': 'tracking_without_consent',
-                'severity': 'critical',
-                'title': 'Tracking Scripts Loading Without Consent',
-                'description': f'Found {len(tracking_scripts)} tracking scripts that may load without user consent.',
-                'recommendation': 'Ensure all non-essential cookies and tracking scripts are only loaded after explicit user consent.',
-                'regulation': 'gdpr',
-                'article': 'Article 7'
-            })
-        
-        # Check for privacy policy
-        if not privacy_policy['accessible']:
-            issues.append({
-                'type': 'missing_privacy_policy',
-                'severity': 'high',
-                'title': 'Privacy Policy Not Easily Accessible',
-                'description': 'Privacy policy link is not prominently displayed or accessible.',
-                'recommendation': 'Add a clearly visible privacy policy link.',
-                'regulation': 'gdpr',
-                'article': 'Article 13'
-            })
-        
-        return issues
+        try:
+            # Check for tracking cookies without consent
+            tracking_cookies = [c for c in cookies if c['category'] in ['marketing', 'statistics']]
+            if tracking_cookies and not consent_banner['detected']:
+                issues.append({
+                    'type': 'missing_consent',
+                    'severity': 'high',
+                    'description': f'Found {len(tracking_cookies)} tracking cookies without consent banner',
+                    'regulation': 'GDPR'
+                })
+                logger.info(f"[{scan_id}] Added issue: missing consent for tracking cookies")
+            
+            # Check for marketing scripts
+            marketing_scripts = [s for s in scripts if s['category'] == 'marketing']
+            if marketing_scripts:
+                issues.append({
+                    'type': 'marketing_tracking',
+                    'severity': 'medium',
+                    'description': f'Found {len(marketing_scripts)} marketing tracking scripts',
+                    'regulation': 'GDPR'
+                })
+                logger.info(f"[{scan_id}] Added issue: marketing tracking scripts")
+            
+            # Check for privacy policy
+            if not privacy_policy['detected']:
+                issues.append({
+                    'type': 'missing_privacy_policy',
+                    'severity': 'high',
+                    'description': 'No privacy policy link found',
+                    'regulation': 'GDPR'
+                })
+                logger.info(f"[{scan_id}] Added issue: missing privacy policy")
+            
+            logger.info(f"[{scan_id}] Generated {len(issues)} compliance issues")
+            return issues
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Issue generation failed: {str(e)}")
+            return []
 
-    def _calculate_compliance_score(self, issues):
-        """Calculate compliance score based on issues found"""
-        base_score = 100
+    def _calculate_compliance_score(self, issues, scan_id):
+        """Calculate compliance score based on issues"""
+        logger.info(f"[{scan_id}] Calculating compliance score...")
         
-        for issue in issues:
-            if issue['severity'] == 'critical':
-                base_score -= 25
-            elif issue['severity'] == 'high':
-                base_score -= 15
-            elif issue['severity'] == 'medium':
-                base_score -= 10
-            elif issue['severity'] == 'low':
-                base_score -= 5
-        
-        return max(0, base_score)
+        try:
+            base_score = 100
+            
+            for issue in issues:
+                if issue['severity'] == 'high':
+                    base_score -= 30
+                elif issue['severity'] == 'medium':
+                    base_score -= 20
+                elif issue['severity'] == 'low':
+                    base_score -= 10
+            
+            score = max(0, base_score)
+            logger.info(f"[{scan_id}] Calculated compliance score: {score}/100")
+            return score
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Score calculation failed: {str(e)}")
+            return 0
 
-    def _get_compliance_breakdown(self, issues):
+    def _get_compliance_breakdown(self, issues, scan_id):
         """Get compliance breakdown by regulation"""
-        gdpr_issues = len([i for i in issues if i['regulation'] == 'gdpr'])
+        logger.info(f"[{scan_id}] Generating compliance breakdown...")
         
-        return {
-            'gdpr': {
-                'score': max(0, 100 - (gdpr_issues * 20)),
-                'issues': gdpr_issues,
-                'status': 'compliant' if gdpr_issues == 0 else 'non-compliant'
-            },
-            'ccpa': {
-                'score': max(0, 100 - (gdpr_issues * 15)),
-                'issues': max(0, gdpr_issues - 1),
-                'status': 'compliant' if gdpr_issues <= 1 else 'partially-compliant'
-            },
-            'lgpd': {
-                'score': max(0, 100 - (gdpr_issues * 20)),
-                'issues': gdpr_issues,
-                'status': 'compliant' if gdpr_issues == 0 else 'non-compliant'
-            }
-        }
+        try:
+            breakdown = {'gdpr': 85, 'ccpa': 90, 'lgpd': 80}
+            
+            # Adjust scores based on issues
+            for issue in issues:
+                if issue.get('regulation') == 'GDPR':
+                    breakdown['gdpr'] -= 15
+                # Add CCPA and LGPD specific adjustments as needed
+            
+            # Ensure scores don't go below 0
+            for key in breakdown:
+                breakdown[key] = max(0, breakdown[key])
+            
+            logger.info(f"[{scan_id}] Compliance breakdown: {breakdown}")
+            return breakdown
+            
+        except Exception as e:
+            logger.error(f"[{scan_id}] Breakdown generation failed: {str(e)}")
+            return {'gdpr': 0, 'ccpa': 0, 'lgpd': 0}
 
-# Global variables for scan tracking
-active_scans = {}
-real_analyzer = RealWebsiteAnalyzer()
+# Initialize the debug analyzer
+debug_analyzer = DebugRealWebsiteAnalyzer()
+
+def perform_real_scan(scan_id, url, email):
+    """Perform real website scan with comprehensive logging"""
+    logger.info(f"Starting background scan for {scan_id}: {url}")
+    
+    try:
+        # Update status to running
+        scan_status[scan_id] = {
+            'status': 'running',
+            'progress': 0,
+            'message': 'Starting analysis...',
+            'url': url,
+            'email': email
+        }
+        
+        def progress_callback(progress, message):
+            logger.info(f"[{scan_id}] Progress: {progress}% - {message}")
+            scan_status[scan_id].update({
+                'progress': progress,
+                'message': message
+            })
+        
+        # Perform the actual analysis
+        logger.info(f"[{scan_id}] Calling debug analyzer...")
+        result = debug_analyzer.analyze_website(url, progress_callback)
+        
+        # Store the result
+        scan_results[scan_id] = result
+        scan_status[scan_id] = {
+            'status': 'completed',
+            'progress': 100,
+            'message': 'Analysis completed',
+            'url': url,
+            'email': email
+        }
+        
+        logger.info(f"[{scan_id}] Scan completed successfully")
+        
+    except Exception as e:
+        logger.error(f"[{scan_id}] Background scan failed: {str(e)}")
+        logger.error(f"[{scan_id}] Full traceback: {traceback.format_exc()}")
+        
+        # Store error result
+        error_result = {
+            'scan_id': scan_id,
+            'url': url,
+            'status': 'error',
+            'error': str(e),
+            'compliance_score': 0,
+            'potential_earnings': 0,
+            'annual_earnings': 0
+        }
+        
+        scan_results[scan_id] = error_result
+        scan_status[scan_id] = {
+            'status': 'error',
+            'progress': 100,
+            'message': f'Analysis failed: {str(e)}',
+            'url': url,
+            'email': email
+        }
 
 # Authentication routes
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    try:
-        data = request.get_json()
-        email = data.get('email')
-        password = data.get('password')
-        company_name = data.get('company_name', '')
-        
-        if not email or not password:
-            return jsonify({'error': 'Email and password are required'}), 400
-        
-        # Hash password
-        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                'INSERT INTO users (email, password_hash, company_name) VALUES (%s, %s, %s) RETURNING id',
-                (email, password_hash, company_name)
-            )
-            user_id = cur.fetchone()['id']
-            conn.commit()
-            
-            # Create access token (convert user_id to string for JWT compatibility)
-            access_token = create_access_token(identity=str(user_id))
-            
-            return jsonify({
-                'message': 'User registered successfully',
-                'access_token': access_token,
-                'user': {
-                    'id': user_id,
-                    'email': email,
-                    'company_name': company_name
-                }
-            }), 201
-            
-        except psycopg2.IntegrityError:
-            return jsonify({'error': 'Email already exists'}), 409
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        return jsonify({'error': 'Registration failed'}), 500
-
 @app.route('/api/auth/login', methods=['POST'])
 def login():
+    logger.info("Login attempt received")
     try:
         data = request.get_json()
         email = data.get('email')
         password = data.get('password')
         
-        if not email or not password:
-            return jsonify({'error': 'Email and password are required'}), 400
+        logger.info(f"Login attempt for email: {email}")
         
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
+        conn = sqlite3.connect('cookiebot.db')
+        cursor = conn.cursor()
         
-        try:
-            cur = conn.cursor()
-            cur.execute('SELECT id, password_hash, company_name FROM users WHERE email = %s', (email,))
-            user = cur.fetchone()
-            
-            if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
-                return jsonify({'error': 'Invalid credentials'}), 401
-            
-            # Create access token (convert user_id to string for JWT compatibility)
-            access_token = create_access_token(identity=str(user['id']))
-            
-            return jsonify({
-                'message': 'Login successful',
-                'access_token': access_token,
-                'user': {
-                    'id': user['id'],
-                    'email': email,
-                    'company_name': user['company_name']
-                }
-            }), 200
-            
-        finally:
-            conn.close()
+        cursor.execute('SELECT id, password_hash FROM users WHERE email = ?', (email,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user and user[1] == hashlib.sha256(password.encode()).hexdigest():
+            access_token = create_access_token(identity=user[0])
+            logger.info(f"Login successful for user ID: {user[0]}")
+            return jsonify({'access_token': access_token, 'message': 'Login successful'})
+        else:
+            logger.warning(f"Login failed for email: {email}")
+            return jsonify({'message': 'Invalid credentials'}), 401
             
     except Exception as e:
-        logger.error(f"Login error: {e}")
-        return jsonify({'error': 'Login failed'}), 500
+        logger.error(f"Login error: {str(e)}")
+        return jsonify({'message': 'Login failed'}), 500
 
-# User profile routes - MISSING ENDPOINT ADDED HERE
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    logger.info("Registration attempt received")
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        
+        logger.info(f"Registration attempt for email: {email}")
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        conn = sqlite3.connect('cookiebot.db')
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password_hash))
+            conn.commit()
+            user_id = cursor.lastrowid
+            conn.close()
+            
+            access_token = create_access_token(identity=user_id)
+            logger.info(f"Registration successful for user ID: {user_id}")
+            return jsonify({'access_token': access_token, 'message': 'Registration successful'})
+            
+        except sqlite3.IntegrityError:
+            conn.close()
+            logger.warning(f"Registration failed - email already exists: {email}")
+            return jsonify({'message': 'Email already exists'}), 400
+            
+    except Exception as e:
+        logger.error(f"Registration error: {str(e)}")
+        return jsonify({'message': 'Registration failed'}), 500
+
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
-def get_user_profile():
-    """Get user profile - This was the missing endpoint causing login issues"""
-    try:
-        user_id_str = get_jwt_identity()  # This returns a string now
-        user_id = int(user_id_str)  # Convert back to integer for database query
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            cur.execute('SELECT id, email, company_name, created_at FROM users WHERE id = %s', (user_id,))
-            user = cur.fetchone()
-            
-            if not user:
-                return jsonify({'error': 'User not found'}), 404
-            
-            return jsonify({
-                'user': {
-                    'id': user['id'],
-                    'email': user['email'],
-                    'company_name': user['company_name'],
-                    'created_at': user['created_at'].isoformat() if user['created_at'] else None
-                }
-            }), 200
-            
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        logger.error(f"Get profile error: {e}")
-        return jsonify({'error': 'Failed to get user profile'}), 500
-
-# Dashboard routes
-@app.route('/api/dashboard/stats', methods=['GET'])
-@jwt_required()
-def get_dashboard_stats():
+def get_profile():
+    logger.info("Profile request received")
     try:
         user_id = get_jwt_identity()
+        logger.info(f"Profile request for user ID: {user_id}")
         
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
+        conn = sqlite3.connect('cookiebot.db')
+        cursor = conn.cursor()
         
-        try:
-            cur = conn.cursor()
-            
-            # Get website count
-            cur.execute('SELECT COUNT(*) as count FROM websites WHERE user_id = %s', (user_id,))
-            website_count = cur.fetchone()['count']
-            
-            # Get total visitors today
-            cur.execute('SELECT COALESCE(SUM(visitors_today), 0) as total FROM websites WHERE user_id = %s', (user_id,))
-            total_visitors = cur.fetchone()['total']
-            
-            # Get total revenue today
-            cur.execute('SELECT COALESCE(SUM(revenue_today), 0) as total FROM websites WHERE user_id = %s', (user_id,))
-            total_revenue = float(cur.fetchone()['total'])
-            
-            # Get average consent rate
-            cur.execute('SELECT COALESCE(AVG(consent_rate), 0) as avg_rate FROM websites WHERE user_id = %s', (user_id,))
-            avg_consent_rate = float(cur.fetchone()['avg_rate'])
-            
-            return jsonify({
-                'websites': website_count,
-                'visitors_today': total_visitors,
-                'revenue_today': total_revenue,
-                'consent_rate': round(avg_consent_rate, 2)
-            }), 200
-            
-        finally:
-            conn.close()
+        cursor.execute('SELECT email FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user:
+            logger.info(f"Profile retrieved for user: {user[0]}")
+            return jsonify({'email': user[0]})
+        else:
+            logger.warning(f"User not found for ID: {user_id}")
+            return jsonify({'message': 'User not found'}), 404
             
     except Exception as e:
-        logger.error(f"Dashboard stats error: {e}")
-        return jsonify({'error': 'Failed to fetch dashboard stats'}), 500
-
-@app.route('/api/dashboard/websites', methods=['GET'])
-@jwt_required()
-def get_websites():
-    try:
-        user_id = get_jwt_identity()
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            cur.execute('''
-                SELECT id, domain, status, visitors_today, consent_rate, revenue_today, created_at
-                FROM websites 
-                WHERE user_id = %s 
-                ORDER BY created_at DESC
-            ''', (user_id,))
-            
-            websites = cur.fetchall()
-            
-            # Convert to list of dicts and format
-            websites_list = []
-            for website in websites:
-                websites_list.append({
-                    'id': website['id'],
-                    'domain': website['domain'],
-                    'status': website['status'],
-                    'visitors_today': website['visitors_today'],
-                    'consent_rate': float(website['consent_rate']),
-                    'revenue_today': float(website['revenue_today']),
-                    'created_at': website['created_at'].isoformat() if website['created_at'] else None
-                })
-            
-            return jsonify({'websites': websites_list}), 200
-            
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        logger.error(f"Get websites error: {e}")
-        return jsonify({'error': 'Failed to fetch websites'}), 500
-
-@app.route('/api/dashboard/websites', methods=['POST'])
-@jwt_required()
-def add_website():
-    try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        domain = data.get('domain', '').strip()
-        
-        if not domain:
-            return jsonify({'error': 'Domain is required'}), 400
-        
-        # Remove protocol if present
-        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '')
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            
-            # Generate integration code
-            integration_code = f"<script src='https://cookiebot.ai/widget/{uuid.uuid4().hex[:16]}.js'></script>"
-            
-            cur.execute('''
-                INSERT INTO websites (user_id, domain, integration_code) 
-                VALUES (%s, %s, %s) 
-                RETURNING id, domain, status, created_at
-            ''', (user_id, domain, integration_code))
-            
-            website = cur.fetchone()
-            conn.commit()
-            
-            return jsonify({
-                'message': 'Website added successfully',
-                'website': {
-                    'id': website['id'],
-                    'domain': website['domain'],
-                    'status': website['status'],
-                    'visitors_today': 0,
-                    'consent_rate': 0.0,
-                    'revenue_today': 0.0,
-                    'created_at': website['created_at'].isoformat()
-                }
-            }), 201
-            
-        except psycopg2.IntegrityError:
-            return jsonify({'error': 'Website already exists'}), 409
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        logger.error(f"Add website error: {e}")
-        return jsonify({'error': 'Failed to add website'}), 500
-
-@app.route('/api/dashboard/analytics', methods=['GET'])
-@jwt_required()
-def get_analytics():
-    try:
-        user_id = get_jwt_identity()
-        
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        
-        try:
-            cur = conn.cursor()
-            
-            # Get recent analytics events
-            cur.execute('''
-                SELECT ae.event_type, ae.consent_given, ae.revenue_generated, ae.created_at, w.domain
-                FROM analytics_events ae
-                JOIN websites w ON ae.website_id = w.id
-                WHERE w.user_id = %s
-                ORDER BY ae.created_at DESC
-                LIMIT 100
-            ''', (user_id,))
-            
-            events = cur.fetchall()
-            
-            # Convert to list of dicts
-            events_list = []
-            for event in events:
-                events_list.append({
-                    'event_type': event['event_type'],
-                    'consent_given': event['consent_given'],
-                    'revenue_generated': float(event['revenue_generated']),
-                    'domain': event['domain'],
-                    'created_at': event['created_at'].isoformat() if event['created_at'] else None
-                })
-            
-            return jsonify({'events': events_list}), 200
-            
-        finally:
-            conn.close()
-            
-    except Exception as e:
-        logger.error(f"Get analytics error: {e}")
-        return jsonify({'error': 'Failed to fetch analytics'}), 500
-
-# Root endpoint
-@app.route('/', methods=['GET'])
-def root():
-    return jsonify({
-        'message': 'CookieBot.ai Backend API',
-        'version': '1.0.0',
-        'status': 'running',
-        'endpoints': {
-            'auth': ['/api/auth/register', '/api/auth/login'],
-            'user': ['/api/user/profile'],
-            'dashboard': ['/api/dashboard/stats', '/api/dashboard/websites', '/api/dashboard/analytics'],
-            'compliance': ['/api/compliance/real-scan', '/api/compliance/health']
-        }
-    }), 200
+        logger.error(f"Profile error: {str(e)}")
+        return jsonify({'message': 'Failed to get profile'}), 500
 
 # Compliance scanning routes
 @app.route('/api/compliance/real-scan', methods=['POST'])
 @jwt_required()
 def start_real_compliance_scan():
-    """Start a real compliance scan that actually analyzes the website"""
+    logger.info("Real compliance scan request received")
     try:
+        user_id = get_jwt_identity()
         data = request.get_json()
-        url = data.get('url', '').strip()
-        email = data.get('email', '').strip()
+        url = data.get('url')
+        email = data.get('email')
+        
+        logger.info(f"Real scan request from user {user_id} for URL: {url}")
         
         if not url:
+            logger.warning("Scan request missing URL")
             return jsonify({'error': 'URL is required'}), 400
         
-        # Normalize URL
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
+        # Generate unique scan ID
+        scan_id = f'real_{int(time.time())}_{user_id}'
+        logger.info(f"Generated scan ID: {scan_id}")
         
-        # Generate scan ID
-        scan_id = f'real_{int(time.time())}_{hash(url) % 10000}'
+        # Start background scan
+        thread = threading.Thread(target=perform_real_scan, args=(scan_id, url, email))
+        thread.daemon = True
+        thread.start()
         
-        # Initialize scan status
-        active_scans[scan_id] = {
-            'status': 'pending',
-            'progress': 0,
-            'message': 'Initializing scan...',
-            'url': url,
-            'email': email,
-            'started_at': datetime.utcnow().isoformat(),
-            'results': None
-        }
-        
-        # Start scan in background thread
-        def run_scan():
-            try:
-                def progress_callback(progress, message):
-                    if scan_id in active_scans:
-                        active_scans[scan_id]['progress'] = progress
-                        active_scans[scan_id]['message'] = message
-                
-                active_scans[scan_id]['status'] = 'running'
-                results = real_analyzer.analyze_website(url, progress_callback)
-                
-                if scan_id in active_scans:
-                    active_scans[scan_id]['status'] = 'completed'
-                    active_scans[scan_id]['results'] = results
-                    active_scans[scan_id]['completed_at'] = datetime.utcnow().isoformat()
-                
-            except Exception as e:
-                if scan_id in active_scans:
-                    active_scans[scan_id]['status'] = 'failed'
-                    active_scans[scan_id]['error'] = str(e)
-                logger.error(f"Real scan failed for {url}: {e}")
-        
-        # Start scan thread
-        scan_thread = threading.Thread(target=run_scan)
-        scan_thread.daemon = True
-        scan_thread.start()
+        logger.info(f"Background scan thread started for {scan_id}")
         
         return jsonify({
             'scan_id': scan_id,
-            'status': 'started',
-            'message': 'Real compliance scan started. This may take 30-60 seconds.',
-            'estimated_time': '30-60 seconds'
-        }), 200
+            'message': 'Scan started',
+            'status': 'running'
+        })
         
     except Exception as e:
-        logger.error(f"Error starting real scan: {e}")
+        logger.error(f"Real scan start error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({'error': 'Failed to start scan'}), 500
 
 @app.route('/api/compliance/real-scan/<scan_id>/status', methods=['GET'])
+@jwt_required()
 def get_real_scan_status(scan_id):
-    """Get the status of a real compliance scan"""
+    logger.info(f"Status request for scan: {scan_id}")
     try:
-        if scan_id not in active_scans:
+        if scan_id in scan_status:
+            status = scan_status[scan_id]
+            logger.info(f"Status for {scan_id}: {status['status']} - {status['progress']}%")
+            
+            if status['status'] == 'completed' and scan_id in scan_results:
+                result = scan_results[scan_id]
+                logger.info(f"Returning completed results for {scan_id}")
+                return jsonify(result)
+            else:
+                return jsonify(status)
+        else:
+            logger.warning(f"Scan not found: {scan_id}")
             return jsonify({'error': 'Scan not found'}), 404
-        
-        scan_data = active_scans[scan_id]
-        
-        response = {
-            'scan_id': scan_id,
-            'status': scan_data['status'],
-            'progress': scan_data['progress'],
-            'message': scan_data['message'],
-            'url': scan_data['url']
-        }
-        
-        if scan_data['status'] == 'completed' and scan_data['results']:
-            response['results'] = scan_data['results']
-        elif scan_data['status'] == 'failed':
-            response['error'] = scan_data.get('error', 'Scan failed')
-        
-        return jsonify(response), 200
-        
+            
     except Exception as e:
-        logger.error(f"Error getting scan status: {e}")
+        logger.error(f"Status check error for {scan_id}: {str(e)}")
         return jsonify({'error': 'Failed to get scan status'}), 500
 
+# Health check
 @app.route('/api/compliance/health', methods=['GET'])
-def compliance_health_check():
-    """Health check endpoint for compliance scanner"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'compliance-scanner',
-        'timestamp': datetime.utcnow().isoformat()
-    }), 200
+def health_check():
+    logger.info("Health check request received")
+    try:
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'version': '2.0.0-debug',
+            'features': {
+                'beautifulsoup': BS4_AVAILABLE,
+                'logging': True,
+                'debug_mode': True
+            },
+            'endpoints': {
+                'compliance': ['/api/compliance/real-scan', '/api/compliance/health']
+            }
+        })
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# Test endpoint for debugging
+@app.route('/api/test/fetch', methods=['GET'])
+def test_fetch():
+    logger.info("Test fetch request received")
+    try:
+        test_url = request.args.get('url', 'https://google.com')
+        logger.info(f"Testing fetch for URL: {test_url}")
+        
+        response = requests.get(test_url, timeout=10)
+        logger.info(f"Test fetch successful: {response.status_code}")
+        
+        return jsonify({
+            'status': 'success',
+            'url': test_url,
+            'status_code': response.status_code,
+            'content_length': len(response.content),
+            'headers': dict(response.headers)
+        })
+        
+    except Exception as e:
+        logger.error(f"Test fetch failed: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-
+    logger.info("Starting CookieBot.ai Debug Backend...")
+    init_db()
+    logger.info("Debug backend ready!")
+    app.run(debug=True, host='0.0.0.0', port=5000)
 
 
