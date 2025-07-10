@@ -491,8 +491,8 @@ def register():
             user_id = cur.fetchone()['id']
             conn.commit()
             
-            # Create access token
-            access_token = create_access_token(identity=user_id)
+            # Create access token (convert user_id to string for JWT compatibility)
+            access_token = create_access_token(identity=str(user_id))
             
             return jsonify({
                 'message': 'User registered successfully',
@@ -535,8 +535,8 @@ def login():
             if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
                 return jsonify({'error': 'Invalid credentials'}), 401
             
-            # Create access token
-            access_token = create_access_token(identity=user['id'])
+            # Create access token (convert user_id to string for JWT compatibility)
+            access_token = create_access_token(identity=str(user['id']))
             
             return jsonify({
                 'message': 'Login successful',
@@ -555,11 +555,47 @@ def login():
         logger.error(f"Login error: {e}")
         return jsonify({'error': 'Login failed'}), 500
 
-# Dashboard routes
+# User profile routes - MISSING ENDPOINT ADDED HERE
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
 def get_user_profile():
     """Get user profile - This was the missing endpoint causing login issues"""
+    try:
+        user_id_str = get_jwt_identity()  # This returns a string now
+        user_id = int(user_id_str)  # Convert back to integer for database query
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            cur.execute('SELECT id, email, company_name, created_at FROM users WHERE id = %s', (user_id,))
+            user = cur.fetchone()
+            
+            if not user:
+                return jsonify({'error': 'User not found'}), 404
+            
+            return jsonify({
+                'user': {
+                    'id': user['id'],
+                    'email': user['email'],
+                    'company_name': user['company_name'],
+                    'created_at': user['created_at'].isoformat() if user['created_at'] else None
+                }
+            }), 200
+            
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        logger.error(f"Get profile error: {e}")
+        return jsonify({'error': 'Failed to get user profile'}), 500
+
+# Dashboard routes
+@app.route('/api/dashboard/stats', methods=['GET'])
+@jwt_required()
+def get_dashboard_stats():
     try:
         user_id = get_jwt_identity()
         
@@ -752,6 +788,7 @@ def root():
         'status': 'running',
         'endpoints': {
             'auth': ['/api/auth/register', '/api/auth/login'],
+            'user': ['/api/user/profile'],
             'dashboard': ['/api/dashboard/stats', '/api/dashboard/websites', '/api/dashboard/analytics'],
             'compliance': ['/api/compliance/demo-scan', '/api/compliance/real-scan', '/api/compliance/health']
         }
@@ -1010,4 +1047,5 @@ def compliance_health_check():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+
 
