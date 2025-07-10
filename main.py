@@ -556,9 +556,10 @@ def login():
         return jsonify({'error': 'Login failed'}), 500
 
 # Dashboard routes
-@app.route('/api/dashboard/stats', methods=['GET'])
+@app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
-def get_dashboard_stats():
+def get_user_profile():
+    """Get user profile - This was the missing endpoint causing login issues"""
     try:
         user_id = get_jwt_identity()
         
