@@ -162,7 +162,7 @@ class RealWebsiteAnalyzer:
         }
 
     def analyze_website(self, url, progress_callback=None):
-        """Analyze a website for compliance issues"""
+        """Analyze a website for compliance issues with improved error handling"""
         try:
             # Normalize URL
             if not url.startswith(('http://', 'https://')):
@@ -171,21 +171,106 @@ class RealWebsiteAnalyzer:
             domain = urlparse(url).netloc
             
             if progress_callback:
-                progress_callback(10, "Fetching website content...")
+                progress_callback(5, "Initializing website analysis...")
             
-            # Fetch the main page with timeout
-            response = self.session.get(url, timeout=15, allow_redirects=True)
-            response.raise_for_status()
+            # Try multiple approaches to fetch the website
+            response = None
+            last_error = None
+            
+            # Approach 1: Try HTTPS first with retries
+            if progress_callback:
+                progress_callback(10, "Connecting to website...")
+            
+            for attempt in range(3):  # 3 attempts
+                try:
+                    if progress_callback:
+                        progress_callback(10 + attempt * 5, f"Fetching website content (attempt {attempt + 1}/3)...")
+                    
+                    # Configure session with better settings
+                    session = requests.Session()
+                    session.headers.update({
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                    })
+                    
+                    # Try with longer timeout and better error handling
+                    response = session.get(
+                        url, 
+                        timeout=(10, 30),  # (connect timeout, read timeout)
+                        allow_redirects=True,
+                        verify=True,  # Verify SSL certificates
+                        stream=False
+                    )
+                    response.raise_for_status()
+                    
+                    # If we get here, the request was successful
+                    break
+                    
+                except requests.exceptions.SSLError as e:
+                    last_error = f"SSL certificate error: {str(e)}"
+                    if attempt == 0:  # Try HTTP on first SSL failure
+                        try:
+                            http_url = url.replace('https://', 'http://')
+                            if progress_callback:
+                                progress_callback(15, "Trying HTTP connection...")
+                            response = session.get(
+                                http_url, 
+                                timeout=(10, 30),
+                                allow_redirects=True,
+                                stream=False
+                            )
+                            response.raise_for_status()
+                            url = http_url  # Update URL for further processing
+                            break
+                        except Exception:
+                            pass  # Continue with retry loop
+                            
+                except requests.exceptions.Timeout as e:
+                    last_error = f"Connection timeout: {str(e)}"
+                    time.sleep(2)  # Wait before retry
+                    
+                except requests.exceptions.ConnectionError as e:
+                    last_error = f"Connection error: {str(e)}"
+                    time.sleep(2)  # Wait before retry
+                    
+                except requests.exceptions.RequestException as e:
+                    last_error = f"Request error: {str(e)}"
+                    time.sleep(1)  # Wait before retry
+                    
+                except Exception as e:
+                    last_error = f"Unexpected error: {str(e)}"
+                    break  # Don't retry on unexpected errors
+            
+            # If all attempts failed
+            if response is None:
+                raise Exception(f"Failed to fetch website after 3 attempts. Last error: {last_error}")
+            
+            if progress_callback:
+                progress_callback(25, "Website fetched successfully, analyzing content...")
+            
+            # Validate response
+            if len(response.content) == 0:
+                raise Exception("Website returned empty content")
             
             if progress_callback:
                 progress_callback(30, "Analyzing website structure...")
             
             # Parse HTML if BeautifulSoup is available
             if BS4_AVAILABLE:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                scripts = self._analyze_scripts(soup, domain)
-                consent_banner = self._check_consent_banner(soup)
-                privacy_policy = self._check_privacy_policy(soup, url)
+                try:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    scripts = self._analyze_scripts(soup, domain)
+                    consent_banner = self._check_consent_banner(soup)
+                    privacy_policy = self._check_privacy_policy(soup, url)
+                except Exception as e:
+                    # Fallback to text analysis if HTML parsing fails
+                    scripts = self._analyze_scripts_fallback(response.text, domain)
+                    consent_banner = self._check_consent_banner_fallback(response.text)
+                    privacy_policy = self._check_privacy_policy_fallback(response.text)
             else:
                 # Fallback analysis without BeautifulSoup
                 scripts = self._analyze_scripts_fallback(response.text, domain)
@@ -193,20 +278,26 @@ class RealWebsiteAnalyzer:
                 privacy_policy = self._check_privacy_policy_fallback(response.text)
             
             if progress_callback:
-                progress_callback(50, "Detecting cookies...")
+                progress_callback(50, "Detecting cookies and tracking scripts...")
             
             # Analyze cookies
             cookies = self._analyze_cookies(response, domain)
             
             if progress_callback:
-                progress_callback(70, "Checking compliance...")
+                progress_callback(70, "Checking compliance requirements...")
             
             # Generate compliance report
             issues = self._generate_compliance_issues(cookies, scripts, consent_banner, privacy_policy, domain)
             compliance_score = self._calculate_compliance_score(issues)
             
             if progress_callback:
-                progress_callback(100, "Generating compliance report...")
+                progress_callback(90, "Generating compliance report...")
+            
+            # Add some additional analysis time for realism
+            time.sleep(1)
+            
+            if progress_callback:
+                progress_callback(100, "Analysis complete!")
             
             return {
                 'scan_id': f'real_{int(time.time())}',
@@ -233,9 +324,20 @@ class RealWebsiteAnalyzer:
             }
             
         except requests.RequestException as e:
-            raise Exception(f"Failed to fetch website: {str(e)}")
+            # More specific error messages for different types of request errors
+            if "Connection aborted" in str(e) or "RemoteDisconnected" in str(e):
+                raise Exception(f"Website connection was interrupted. This can happen if the website is slow to respond or blocks automated requests. Please try again or contact the website administrator.")
+            elif "timeout" in str(e).lower():
+                raise Exception(f"Website took too long to respond (timeout). The website might be slow or temporarily unavailable.")
+            elif "ssl" in str(e).lower():
+                raise Exception(f"SSL/HTTPS connection error. The website might have certificate issues.")
+            else:
+                raise Exception(f"Failed to fetch website: {str(e)}")
         except Exception as e:
-            raise Exception(f"Analysis failed: {str(e)}")
+            if "timeout" in str(e).lower():
+                raise Exception(f"Website analysis timed out. The website might be slow or temporarily unavailable.")
+            else:
+                raise Exception(f"Analysis failed: {str(e)}")
 
     def _analyze_cookies(self, response, domain):
         """Analyze cookies set by the website"""
