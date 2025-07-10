@@ -780,16 +780,6 @@ def compliance_health_check():
         'timestamp': datetime.utcnow().isoformat()
     }), 200
 
-@app.route('/api/compliance/health', methods=['GET'])
-def compliance_health_check():
-    """Health check endpoint for compliance scanner"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'compliance-scanner',
-        'timestamp': datetime.utcnow().isoformat()
-    }), 200
-
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
