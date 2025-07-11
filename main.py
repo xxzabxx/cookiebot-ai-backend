@@ -1038,6 +1038,425 @@ def get_real_scan_status(scan_id):
         logger.error(f"Error getting scan status: {e}")
         return jsonify({'error': f'Failed to get scan status: {str(e)}'}), 500
 
+# ===== PRIVACY INSIGHTS API ENDPOINTS =====
+
+@app.route('/api/privacy-insights', methods=['POST'])
+def get_privacy_insights():
+    """
+    Get privacy insights content for the widget
+    """
+    try:
+        data = request.get_json()
+        client_id = data.get('clientId')
+        domain = data.get('domain')
+        language = data.get('language', 'en')
+        context = data.get('context', {})
+        
+        if not client_id:
+            return jsonify({'error': 'Client ID required'}), 400
+        
+        # Get language code
+        lang_code = language.split('-')[0] if language else 'en'
+        
+        # Privacy insights content library
+        insights_library = {
+            'en': [
+                {
+                    'id': 'password-security',
+                    'title': 'Strengthen Your Password Security',
+                    'description': 'Use unique passwords for each account and enable two-factor authentication to protect your personal data.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.15  # Cost per click for revenue calculation
+                },
+                {
+                    'id': 'privacy-settings',
+                    'title': 'Review Your Social Media Privacy',
+                    'description': 'Check your privacy settings on social platforms to control who can see your personal information.',
+                    'category': 'privacy',
+                    'sponsored': True,
+                    'cpc': 0.12
+                },
+                {
+                    'id': 'data-backup',
+                    'title': 'Backup Your Important Data',
+                    'description': 'Regular backups protect against data loss from cyber attacks, hardware failure, or accidental deletion.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.18
+                },
+                {
+                    'id': 'browser-privacy',
+                    'title': 'Enhance Your Browser Privacy',
+                    'description': 'Use private browsing mode and clear cookies regularly to reduce online tracking.',
+                    'category': 'privacy',
+                    'sponsored': True,
+                    'cpc': 0.14
+                },
+                {
+                    'id': 'wifi-security',
+                    'title': 'Secure Your WiFi Connection',
+                    'description': 'Avoid public WiFi for sensitive activities and use a VPN to encrypt your internet connection.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.20
+                },
+                {
+                    'id': 'email-protection',
+                    'title': 'Protect Your Email Privacy',
+                    'description': 'Be cautious with email attachments and links, and use encrypted email services when possible.',
+                    'category': 'privacy',
+                    'sponsored': True,
+                    'cpc': 0.16
+                }
+            ],
+            'es': [
+                {
+                    'id': 'password-security',
+                    'title': 'Fortalece la Seguridad de tus Contraseñas',
+                    'description': 'Usa contraseñas únicas para cada cuenta y activa la autenticación de dos factores.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.15
+                },
+                {
+                    'id': 'privacy-settings',
+                    'title': 'Revisa tu Privacidad en Redes Sociales',
+                    'description': 'Verifica la configuración de privacidad en plataformas sociales para controlar quién ve tu información.',
+                    'category': 'privacy',
+                    'sponsored': True,
+                    'cpc': 0.12
+                },
+                {
+                    'id': 'data-backup',
+                    'title': 'Respalda tus Datos Importantes',
+                    'description': 'Los respaldos regulares protegen contra la pérdida de datos por ataques cibernéticos o fallas de hardware.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.18
+                }
+            ],
+            'fr': [
+                {
+                    'id': 'password-security',
+                    'title': 'Renforcez la Sécurité de vos Mots de Passe',
+                    'description': 'Utilisez des mots de passe uniques et activez l\'authentification à deux facteurs.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.15
+                },
+                {
+                    'id': 'privacy-settings',
+                    'title': 'Vérifiez vos Paramètres de Confidentialité',
+                    'description': 'Contrôlez vos paramètres de confidentialité sur les réseaux sociaux pour protéger vos informations.',
+                    'category': 'privacy',
+                    'sponsored': True,
+                    'cpc': 0.12
+                },
+                {
+                    'id': 'data-backup',
+                    'title': 'Sauvegardez vos Données Importantes',
+                    'description': 'Les sauvegardes régulières protègent contre la perte de données due aux cyberattaques.',
+                    'category': 'security',
+                    'sponsored': True,
+                    'cpc': 0.18
+                }
+            ]
+        }
+        
+        # Get insights for the requested language
+        insights = insights_library.get(lang_code, insights_library['en'])
+        
+        # Log the request
+        logger.info(f"Privacy insights requested for client {client_id}, domain {domain}, language {lang_code}")
+        
+        return jsonify(insights)
+        
+    except Exception as e:
+        logger.error(f"Error getting privacy insights: {str(e)}")
+        return jsonify({'error': 'Failed to get privacy insights'}), 500
+
+
+@app.route('/api/privacy-insight-click', methods=['POST'])
+def track_privacy_insight_click():
+    """
+    Track privacy insight clicks for revenue sharing
+    """
+    try:
+        data = request.get_json()
+        client_id = data.get('clientId')
+        insight_id = data.get('insightId')
+        domain = data.get('domain')
+        timestamp = data.get('timestamp')
+        revenue_share = data.get('revenueShare', 0.6)  # Default 60% to website owner
+        
+        if not all([client_id, insight_id, domain]):
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        # Calculate revenue based on insight CPC
+        insight_cpc_map = {
+            'password-security': 0.15,
+            'privacy-settings': 0.12,
+            'data-backup': 0.18,
+            'browser-privacy': 0.14,
+            'wifi-security': 0.20,
+            'email-protection': 0.16
+        }
+        
+        base_revenue = insight_cpc_map.get(insight_id, 0.15)
+        website_owner_revenue = base_revenue * revenue_share
+        platform_revenue = base_revenue * (1 - revenue_share)
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Store the click event in analytics_events table
+            cur.execute("""
+                INSERT INTO analytics_events (website_id, event_type, visitor_id, consent_given, revenue_generated, metadata, created_at)
+                VALUES (
+                    (SELECT id FROM websites WHERE integration_code LIKE %s LIMIT 1),
+                    'privacy_insight_click',
+                    %s,
+                    true,
+                    %s,
+                    %s,
+                    %s
+                )
+            """, (
+                f'%{client_id}%',  # Search for client_id in integration_code
+                f"privacy_insight_{insight_id}_{int(time.time())}",  # Unique visitor ID
+                website_owner_revenue,
+                json.dumps({
+                    'insight_id': insight_id,
+                    'domain': domain,
+                    'base_revenue': base_revenue,
+                    'revenue_share': revenue_share,
+                    'platform_revenue': platform_revenue
+                }),
+                timestamp or datetime.utcnow().isoformat()
+            ))
+            
+            # Update user's revenue balance
+            cur.execute("""
+                UPDATE users 
+                SET revenue_balance = COALESCE(revenue_balance, 0) + %s
+                WHERE id = (
+                    SELECT user_id FROM websites WHERE integration_code LIKE %s LIMIT 1
+                )
+            """, (website_owner_revenue, f'%{client_id}%'))
+            
+            conn.commit()
+            
+            logger.info(f"Privacy insight click tracked: {insight_id} for client {client_id}, revenue: ${website_owner_revenue:.4f}")
+            
+            return jsonify({
+                'success': True,
+                'revenue': website_owner_revenue,
+                'insight_id': insight_id,
+                'timestamp': timestamp
+            })
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error tracking privacy insight click: {str(e)}")
+            return jsonify({'error': 'Failed to track click'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error tracking privacy insight click: {str(e)}")
+        return jsonify({'error': 'Failed to track click'}), 500
+
+
+@app.route('/api/privacy-insights/stats', methods=['GET'])
+@jwt_required()
+def get_privacy_insights_stats():
+    """
+    Get privacy insights statistics for dashboard
+    """
+    try:
+        current_user_id = int(get_jwt_identity())
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Get total privacy insight clicks and revenue
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_clicks,
+                    COALESCE(SUM(revenue_generated), 0) as total_revenue,
+                    COUNT(DISTINCT DATE(created_at)) as active_days
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s 
+                AND ae.event_type = 'privacy_insight_click'
+                AND ae.created_at >= NOW() - INTERVAL '30 days'
+            """, (current_user_id,))
+            
+            stats = cur.fetchone()
+            
+            # Get daily breakdown for the last 7 days
+            cur.execute("""
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(*) as clicks,
+                    COALESCE(SUM(revenue_generated), 0) as revenue
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s 
+                AND ae.event_type = 'privacy_insight_click'
+                AND ae.created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY date DESC
+            """, (current_user_id,))
+            
+            daily_stats = cur.fetchall()
+            
+            # Get top performing insights
+            cur.execute("""
+                SELECT 
+                    ae.metadata->>'insight_id' as insight_id,
+                    COUNT(*) as clicks,
+                    COALESCE(SUM(revenue_generated), 0) as revenue
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s 
+                AND ae.event_type = 'privacy_insight_click'
+                AND ae.created_at >= NOW() - INTERVAL '30 days'
+                GROUP BY ae.metadata->>'insight_id'
+                ORDER BY revenue DESC
+                LIMIT 5
+            """, (current_user_id,))
+            
+            top_insights = cur.fetchall()
+            
+            return jsonify({
+                'total_clicks': stats[0] if stats else 0,
+                'total_revenue': float(stats[1]) if stats else 0.0,
+                'active_days': stats[2] if stats else 0,
+                'daily_stats': [
+                    {
+                        'date': str(row[0]),
+                        'clicks': row[1],
+                        'revenue': float(row[2])
+                    } for row in daily_stats
+                ],
+                'top_insights': [
+                    {
+                        'insight_id': row[0],
+                        'clicks': row[1],
+                        'revenue': float(row[2])
+                    } for row in top_insights
+                ]
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting privacy insights stats: {str(e)}")
+            return jsonify({'error': 'Failed to get stats'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error getting privacy insights stats: {str(e)}")
+        return jsonify({'error': 'Failed to get stats'}), 500
+
+
+@app.route('/api/privacy-insights/config', methods=['GET', 'POST'])
+@jwt_required()
+def privacy_insights_config():
+    """
+    Get or update privacy insights configuration for a website
+    """
+    try:
+        current_user_id = int(get_jwt_identity())
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            if request.method == 'GET':
+                website_id = request.args.get('website_id')
+                if not website_id:
+                    return jsonify({'error': 'Website ID required'}), 400
+                
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT integration_code, domain, status
+                    FROM websites 
+                    WHERE id = %s AND user_id = %s
+                """, (website_id, current_user_id))
+                
+                website = cur.fetchone()
+                if not website:
+                    return jsonify({'error': 'Website not found'}), 404
+                
+                # Default privacy insights configuration
+                config = {
+                    'enabled': True,
+                    'widget_delay': 3000,  # 3 seconds
+                    'widget_duration': 15000,  # 15 seconds
+                    'revenue_share': 0.6,  # 60% to website owner
+                    'language': 'auto',
+                    'categories': ['security', 'privacy']
+                }
+                
+                return jsonify({
+                    'website': {
+                        'id': website_id,
+                        'domain': website[1],
+                        'integration_code': website[0],
+                        'status': website[2]
+                    },
+                    'privacy_insights_config': config
+                })
+            
+            elif request.method == 'POST':
+                data = request.get_json()
+                website_id = data.get('website_id')
+                config = data.get('config', {})
+                
+                if not website_id:
+                    return jsonify({'error': 'Website ID required'}), 400
+                
+                # Validate website ownership
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT id FROM websites 
+                    WHERE id = %s AND user_id = %s
+                """, (website_id, current_user_id))
+                
+                if not cur.fetchone():
+                    return jsonify({'error': 'Website not found'}), 404
+                
+                # In a full implementation, you would store this config in a separate table
+                # For now, we'll just return success
+                logger.info(f"Privacy insights config updated for website {website_id}: {config}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Privacy insights configuration updated',
+                    'config': config
+                })
+                
+        except Exception as e:
+            logger.error(f"Error handling privacy insights config: {str(e)}")
+            return jsonify({'error': 'Failed to handle config'}), 500
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        logger.error(f"Error handling privacy insights config: {str(e)}")
+        return jsonify({'error': 'Failed to handle config'}), 500
+
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -1113,6 +1532,12 @@ def root():
             'compliance': {
                 'real_scan': '/api/compliance/real-scan',
                 'scan_status': '/api/compliance/real-scan/<scan_id>/status'
+            },
+            'privacy_insights': {
+                'content': '/api/privacy-insights',
+                'click_tracking': '/api/privacy-insight-click',
+                'stats': '/api/privacy-insights/stats',
+                'config': '/api/privacy-insights/config'
             }
         }
     }), 200
