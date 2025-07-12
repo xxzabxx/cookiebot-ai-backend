@@ -15,6 +15,9 @@ import re
 import threading
 import time
 from urllib.parse import urlparse, urljoin
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1457,6 +1460,208 @@ def privacy_insights_config():
         logger.error(f"Error handling privacy insights config: {str(e)}")
         return jsonify({'error': 'Failed to handle config'}), 500
 
+# ===== CONTACT FORM API ENDPOINT =====
+
+@app.route('/api/contact', methods=['POST'])
+def contact_form():
+    """
+    Handle contact form submissions
+    """
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['name', 'email', 'message']
+        for field in required_fields:
+            if not data.get(field) or not data[field].strip():
+                return jsonify({
+                    'success': False,
+                    'error': f'{field.capitalize()} is required'
+                }), 400
+        
+        # Validate email format
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, data['email']):
+            return jsonify({
+                'success': False,
+                'error': 'Please enter a valid email address'
+            }), 400
+        
+        # Sanitize inputs
+        name = data['name'].strip()[:100]  # Limit length
+        email = data['email'].strip()[:100]
+        company = data.get('company', '').strip()[:100]
+        subject = data.get('subject', '').strip()[:200]
+        message = data['message'].strip()[:2000]  # Limit message length
+        inquiry_type = data.get('inquiryType', 'general').strip()[:50]
+        
+        # Create email content
+        email_subject = f"New Contact Form Submission - {name}"
+        if subject:
+            email_subject = f"New Contact: {subject} - {name}"
+        
+        email_body = f"""
+New contact form submission from CookieBot.ai website:
+
+Name: {name}
+Email: {email}
+Company: {company if company else 'Not provided'}
+Inquiry Type: {inquiry_type}
+Subject: {subject if subject else 'Not provided'}
+
+Message:
+{message}
+
+Submitted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+IP Address: {request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'Unknown'))}
+User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
+"""
+        
+        # Send email using environment variables for configuration
+        try:
+            # You'll need to set these environment variables in Vercel
+            smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+            smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+            smtp_username = os.environ.get('SMTP_USERNAME')  # Your email
+            smtp_password = os.environ.get('SMTP_PASSWORD')  # App password
+            
+            if not smtp_username or not smtp_password:
+                # Fallback: Log to console and save to database
+                logger.info(f"Contact form submission: {email_body}")
+                
+                # Save to database for manual review
+                try:
+                    conn = get_db_connection()
+                    if conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (
+                            1,  # Default website ID for contact forms
+                            'contact_form_submission',
+                            email,  # Use email as visitor ID
+                            json.dumps({
+                                'name': name,
+                                'email': email,
+                                'company': company,
+                                'subject': subject,
+                                'message': message,
+                                'inquiry_type': inquiry_type,
+                                'ip_address': request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR')),
+                                'user_agent': request.environ.get('HTTP_USER_AGENT')
+                            }),
+                            datetime.now()
+                        ))
+                        conn.commit()
+                        conn.close()
+                except Exception as db_error:
+                    logger.error(f"Database error: {db_error}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Thank you for your message! We will get back to you within 24 hours.'
+                })
+            
+            # Create email message
+            msg = MIMEMultipart()
+            msg['From'] = smtp_username
+            msg['To'] = 'info@cookiebot.ai'
+            msg['Subject'] = email_subject
+            msg['Reply-To'] = email  # Allow direct reply to the sender
+            
+            # Add body to email
+            msg.attach(MIMEText(email_body, 'plain'))
+            
+            # Send email
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            text = msg.as_string()
+            server.sendmail(smtp_username, 'info@cookiebot.ai', text)
+            server.quit()
+            
+            # Also save to database for tracking
+            try:
+                conn = get_db_connection()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        1,  # Default website ID for contact forms
+                        'contact_form_submission',
+                        email,  # Use email as visitor ID
+                        json.dumps({
+                            'name': name,
+                            'email': email,
+                            'company': company,
+                            'subject': subject,
+                            'message': message,
+                            'inquiry_type': inquiry_type,
+                            'email_sent': True,
+                            'ip_address': request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR')),
+                            'user_agent': request.environ.get('HTTP_USER_AGENT')
+                        }),
+                        datetime.now()
+                    ))
+                    conn.commit()
+                    conn.close()
+            except Exception as db_error:
+                logger.error(f"Database error: {db_error}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Thank you for your message! We will get back to you within 24 hours.'
+            })
+            
+        except Exception as email_error:
+            logger.error(f"Email error: {email_error}")
+            
+            # Save to database even if email fails
+            try:
+                conn = get_db_connection()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        1,  # Default website ID for contact forms
+                        'contact_form_submission',
+                        email,  # Use email as visitor ID
+                        json.dumps({
+                            'name': name,
+                            'email': email,
+                            'company': company,
+                            'subject': subject,
+                            'message': message,
+                            'inquiry_type': inquiry_type,
+                            'email_sent': False,
+                            'email_error': str(email_error),
+                            'ip_address': request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR')),
+                            'user_agent': request.environ.get('HTTP_USER_AGENT')
+                        }),
+                        datetime.now()
+                    ))
+                    conn.commit()
+                    conn.close()
+            except Exception as db_error:
+                logger.error(f"Database error: {db_error}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Thank you for your message! We have received it and will get back to you soon.'
+            })
+    
+    except Exception as e:
+        logger.error(f"Contact form error: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'An error occurred while sending your message. Please try again later.'
+        }), 500
+
 # Health check endpoint
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -1538,7 +1743,8 @@ def root():
                 'click_tracking': '/api/privacy-insight-click',
                 'stats': '/api/privacy-insights/stats',
                 'config': '/api/privacy-insights/config'
-            }
+            },
+            'contact': '/api/contact'
         }
     }), 200
 
