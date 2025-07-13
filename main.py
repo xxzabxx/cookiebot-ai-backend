@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import os
@@ -41,6 +41,17 @@ CORS(app,
 
 # Global storage for active scans
 active_scans = {}
+
+# ===== STATIC FILE SERVING ROUTE (NEW) =====
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files from the static directory"""
+    try:
+        static_dir = os.path.join(os.path.dirname(__file__), 'static')
+        return send_from_directory(static_dir, filename)
+    except Exception as e:
+        logger.error(f"Static file serving error: {e}")
+        return jsonify({'error': 'File not found'}), 404
 
 # Database connection
 def get_db_connection():
@@ -1849,7 +1860,8 @@ def health_check():
                     'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
                     'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
                 },
-                'active_scans': len(active_scans)
+                'active_scans': len(active_scans),
+                'static_file_serving': 'enabled'
             }), 200
             
         except Exception as e:
@@ -1877,8 +1889,10 @@ def root():
         'message': 'CookieBot.ai Backend API',
         'version': '2.0.0',
         'status': 'running',
+        'static_files': 'enabled',
         'endpoints': {
             'health': '/api/health',
+            'static': '/static/<filename>',
             'auth': {
                 'register': '/api/auth/register',
                 'login': '/api/auth/login'
