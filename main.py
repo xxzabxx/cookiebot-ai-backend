@@ -959,6 +959,157 @@ def track_event():
         logger.error(f"Tracking error: {e}")
         return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
 
+# Cookie scan route (no auth required)
+@app.route('/api/cookie-scan', methods=['POST'])
+def cookie_scan():
+    """
+    Receive and process cookie scan data from CookieBot.ai scripts
+    """
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        client_id = data.get('clientId')
+        domain = data.get('domain')
+        cookies = data.get('cookies', [])
+        timestamp = data.get('timestamp')
+        
+        if not all([client_id, domain]):
+            return jsonify({'error': 'Missing required fields: clientId, domain'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Find or create website record
+            cur.execute("""
+                SELECT id, user_id FROM websites 
+                WHERE integration_code LIKE %s OR domain = %s
+                LIMIT 1
+            """, (f'%{client_id}%', domain))
+            
+            website = cur.fetchone()
+            
+            if not website:
+                # Create a basic website record for tracking
+                cur.execute("""
+                    INSERT INTO websites (user_id, domain, status, integration_code)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, user_id
+                """, (
+                    1,  # Default user ID for unregistered domains
+                    domain,
+                    'active',
+                    f'<!-- CookieBot.ai Client ID: {client_id} -->'
+                ))
+                website = cur.fetchone()
+                conn.commit()
+            
+            website_id = website['id']
+            user_id = website['user_id']
+            
+            # Process each cookie/script detected
+            total_cookies = len(cookies)
+            marketing_cookies = len([c for c in cookies if c.get('category') == 'marketing'])
+            statistics_cookies = len([c for c in cookies if c.get('category') == 'statistics'])
+            functional_cookies = len([c for c in cookies if c.get('category') == 'functional'])
+            
+            # Store the scan event
+            cur.execute("""
+                INSERT INTO analytics_events (
+                    website_id, 
+                    event_type, 
+                    visitor_id, 
+                    consent_given, 
+                    revenue_generated, 
+                    metadata, 
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                website_id,
+                'cookie_scan',
+                f"scan_{client_id}_{int(time.time())}",
+                None,
+                0.00,
+                json.dumps({
+                    'client_id': client_id,
+                    'domain': domain,
+                    'total_cookies': total_cookies,
+                    'marketing_cookies': marketing_cookies,
+                    'statistics_cookies': statistics_cookies,
+                    'functional_cookies': functional_cookies,
+                    'cookies_detected': cookies,
+                    'scan_timestamp': timestamp
+                }),
+                timestamp or datetime.utcnow().isoformat()
+            ))
+            
+            scan_event_id = cur.fetchone()['id']
+            
+            # Update website statistics
+            cur.execute("""
+                UPDATE websites 
+                SET 
+                    visitors_today = visitors_today + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (website_id,))
+            
+            # Calculate compliance score
+            compliance_score = 100
+            if marketing_cookies > 0:
+                compliance_score -= (marketing_cookies * 15)
+            if statistics_cookies > 0:
+                compliance_score -= (statistics_cookies * 10)
+            if functional_cookies > 3:
+                compliance_score -= ((functional_cookies - 3) * 5)
+            
+            compliance_score = max(0, min(100, compliance_score))
+            
+            conn.commit()
+            
+            logger.info(f"Cookie scan processed: domain={domain}, client_id={client_id}, cookies={total_cookies}, score={compliance_score}")
+            
+            return jsonify({
+                'success': True,
+                'scan_id': scan_event_id,
+                'website_id': website_id,
+                'compliance_score': compliance_score,
+                'cookies_detected': total_cookies,
+                'breakdown': {
+                    'marketing': marketing_cookies,
+                    'statistics': statistics_cookies,
+                    'functional': functional_cookies,
+                    'necessary': total_cookies - marketing_cookies - statistics_cookies - functional_cookies
+                },
+                'recommendations': [
+                    'Implement proper consent management for marketing cookies',
+                    'Consider reducing third-party tracking scripts',
+                    'Ensure all cookies have proper categorization'
+                ] if compliance_score < 80 else [
+                    'Good compliance detected',
+                    'Continue monitoring cookie usage',
+                    'Consider implementing Privacy Insights for revenue'
+                ],
+                'timestamp': timestamp or datetime.utcnow().isoformat()
+            }), 200
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Cookie scan processing error: {str(e)}")
+            return jsonify({'error': f'Failed to process scan: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Cookie scan error: {str(e)}")
+        return jsonify({'error': f'Cookie scan failed: {str(e)}'}), 500
+
 # Real compliance scanning routes
 @app.route('/api/compliance/real-scan', methods=['POST'])
 @jwt_required()
@@ -1740,6 +1891,7 @@ def root():
                 'dashboard': '/api/analytics/dashboard'
             },
             'tracking': '/api/public/track',
+            'cookie_scan': '/api/cookie-scan',
             'compliance': {
                 'real_scan': '/api/compliance/real-scan',
                 'scan_status': '/api/compliance/real-scan/<scan_id>/status'
