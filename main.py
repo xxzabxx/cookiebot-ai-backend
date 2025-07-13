@@ -31,7 +31,13 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
 # Initialize extensions
 jwt = JWTManager(app)
-CORS(app, origins=["*"])  # Allow all origins for development
+
+# CORS Configuration - Fixed for Vercel deployment
+CORS(app, 
+     origins=['https://cookiebot.ai', 'https://www.cookiebot.ai', 'http://localhost:3000'],
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
+     supports_credentials=True)
 
 # Global storage for active scans
 active_scans = {}
