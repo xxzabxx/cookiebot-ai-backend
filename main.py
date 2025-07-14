@@ -2326,4 +2326,585 @@ def get_integration_code(website_id):
         return jsonify({'error': f'Failed to get integration code: {str(e)}'}), 500
 
 # ===== END OF PHASE 1 ENHANCEMENTS =====
+# ===== PHASE 2 ENHANCEMENTS - REAL-TIME METRICS API WITH CACHING =====
+
+# Add these imports at the top (after existing imports)
+from functools import wraps
+import redis
+from datetime import datetime, timedelta
+import json
+from collections import defaultdict
+
+# ===== CACHING SYSTEM =====
+# Initialize Redis for caching (fallback to in-memory if Redis unavailable)
+try:
+    redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'), decode_responses=True)
+    redis_client.ping()
+    CACHE_ENABLED = True
+    logger.info("Redis cache enabled")
+except:
+    CACHE_ENABLED = False
+    cache_store = {}
+    logger.info("Using in-memory cache (Redis unavailable)")
+
+def get_cache(key):
+    """Get value from cache"""
+    if CACHE_ENABLED:
+        try:
+            return redis_client.get(key)
+        except:
+            return None
+    else:
+        return cache_store.get(key)
+
+def set_cache(key, value, ttl=300):
+    """Set value in cache with TTL (default 5 minutes)"""
+    if CACHE_ENABLED:
+        try:
+            redis_client.setex(key, ttl, value)
+        except:
+            pass
+    else:
+        cache_store[key] = value
+        # Simple TTL for in-memory cache
+        threading.Timer(ttl, lambda: cache_store.pop(key, None)).start()
+
+def cache_key(*args):
+    """Generate cache key from arguments"""
+    return ":".join(str(arg) for arg in args)
+
+# ===== REAL-TIME METRICS API ENDPOINTS =====
+
+@app.route('/api/websites/<int:website_id>/metrics', methods=['GET'])
+@jwt_required()
+def get_website_metrics(website_id):
+    """Get real-time metrics for a specific website"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        # Check cache first
+        cache_key_str = cache_key("website_metrics", user_id, website_id)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Verify website ownership
+            cur.execute("""
+                SELECT id, domain, client_id, status, visitors_today, consent_rate, revenue_today
+                FROM websites 
+                WHERE id = %s AND user_id = %s
+            """, (website_id, user_id))
+            
+            website = cur.fetchone()
+            if not website:
+                return jsonify({'error': 'Website not found'}), 404
+            
+            # Get today's detailed metrics
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_events,
+                    COUNT(DISTINCT visitor_id) as unique_visitors,
+                    COUNT(CASE WHEN consent_given = true THEN 1 END) as consents_given,
+                    SUM(revenue_generated) as total_revenue,
+                    COUNT(CASE WHEN event_type = 'page_view' THEN 1 END) as page_views,
+                    COUNT(CASE WHEN event_type = 'privacy_insight_click' THEN 1 END) as privacy_clicks,
+                    AVG(CASE WHEN consent_given = true THEN 100.0 ELSE 0.0 END) as consent_rate
+                FROM analytics_events 
+                WHERE website_id = %s AND created_at >= CURRENT_DATE
+            """, (website_id,))
+            
+            metrics = cur.fetchone()
+            
+            # Get hourly breakdown for today
+            cur.execute("""
+                SELECT 
+                    EXTRACT(HOUR FROM created_at) as hour,
+                    COUNT(DISTINCT visitor_id) as visitors,
+                    COUNT(CASE WHEN consent_given = true THEN 1 END) as consents,
+                    SUM(revenue_generated) as revenue
+                FROM analytics_events 
+                WHERE website_id = %s AND created_at >= CURRENT_DATE
+                GROUP BY EXTRACT(HOUR FROM created_at)
+                ORDER BY hour
+            """, (website_id,))
+            
+            hourly_data = cur.fetchall()
+            
+            # Get top event types
+            cur.execute("""
+                SELECT 
+                    event_type,
+                    COUNT(*) as count,
+                    SUM(revenue_generated) as revenue
+                FROM analytics_events 
+                WHERE website_id = %s AND created_at >= CURRENT_DATE
+                GROUP BY event_type
+                ORDER BY count DESC
+                LIMIT 10
+            """, (website_id,))
+            
+            event_types = cur.fetchall()
+            
+            result = {
+                'website': {
+                    'id': website['id'],
+                    'domain': website['domain'],
+                    'client_id': website['client_id'],
+                    'status': website['status']
+                },
+                'today_metrics': {
+                    'total_events': metrics['total_events'] or 0,
+                    'unique_visitors': metrics['unique_visitors'] or 0,
+                    'consents_given': metrics['consents_given'] or 0,
+                    'total_revenue': float(metrics['total_revenue'] or 0),
+                    'page_views': metrics['page_views'] or 0,
+                    'privacy_clicks': metrics['privacy_clicks'] or 0,
+                    'consent_rate': float(metrics['consent_rate'] or 0)
+                },
+                'hourly_breakdown': [
+                    {
+                        'hour': int(row['hour']),
+                        'visitors': row['visitors'],
+                        'consents': row['consents'],
+                        'revenue': float(row['revenue'] or 0)
+                    } for row in hourly_data
+                ],
+                'event_types': [
+                    {
+                        'type': row['event_type'],
+                        'count': row['count'],
+                        'revenue': float(row['revenue'] or 0)
+                    } for row in event_types
+                ],
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            # Cache for 30 seconds (real-time feel with performance)
+            set_cache(cache_key_str, json.dumps(result), 30)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            logger.error(f"Website metrics error: {e}")
+            return jsonify({'error': f'Failed to get metrics: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Website metrics error: {e}")
+        return jsonify({'error': f'Failed to get metrics: {str(e)}'}), 500
+
+@app.route('/api/websites/<int:website_id>/analytics', methods=['GET'])
+@jwt_required()
+def get_website_analytics(website_id):
+    """Get historical analytics data with date range support"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        # Get date range parameters
+        start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
+        end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
+        granularity = request.args.get('granularity', 'daily')  # daily, hourly, weekly
+        
+        # Check cache
+        cache_key_str = cache_key("website_analytics", user_id, website_id, start_date, end_date, granularity)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Verify website ownership
+            cur.execute("""
+                SELECT id, domain FROM websites 
+                WHERE id = %s AND user_id = %s
+            """, (website_id, user_id))
+            
+            website = cur.fetchone()
+            if not website:
+                return jsonify({'error': 'Website not found'}), 404
+            
+            # Build query based on granularity
+            if granularity == 'hourly':
+                date_trunc = "DATE_TRUNC('hour', created_at)"
+                date_format = "YYYY-MM-DD HH24:00:00"
+            elif granularity == 'weekly':
+                date_trunc = "DATE_TRUNC('week', created_at)"
+                date_format = "YYYY-MM-DD"
+            else:  # daily
+                date_trunc = "DATE_TRUNC('day', created_at)"
+                date_format = "YYYY-MM-DD"
+            
+            # Get analytics data
+            cur.execute(f"""
+                SELECT 
+                    {date_trunc} as period,
+                    TO_CHAR({date_trunc}, '{date_format}') as period_label,
+                    COUNT(DISTINCT visitor_id) as unique_visitors,
+                    COUNT(*) as total_events,
+                    COUNT(CASE WHEN consent_given = true THEN 1 END) as consents,
+                    SUM(revenue_generated) as revenue,
+                    AVG(CASE WHEN consent_given = true THEN 100.0 ELSE 0.0 END) as consent_rate,
+                    COUNT(CASE WHEN event_type = 'page_view' THEN 1 END) as page_views,
+                    COUNT(CASE WHEN event_type = 'privacy_insight_click' THEN 1 END) as privacy_clicks
+                FROM analytics_events 
+                WHERE website_id = %s 
+                    AND created_at >= %s 
+                    AND created_at <= %s + INTERVAL '1 day'
+                GROUP BY {date_trunc}
+                ORDER BY period
+            """, (website_id, start_date, end_date))
+            
+            analytics_data = cur.fetchall()
+            
+            # Get summary statistics
+            cur.execute("""
+                SELECT 
+                    COUNT(DISTINCT visitor_id) as total_unique_visitors,
+                    COUNT(*) as total_events,
+                    COUNT(CASE WHEN consent_given = true THEN 1 END) as total_consents,
+                    SUM(revenue_generated) as total_revenue,
+                    AVG(CASE WHEN consent_given = true THEN 100.0 ELSE 0.0 END) as avg_consent_rate
+                FROM analytics_events 
+                WHERE website_id = %s 
+                    AND created_at >= %s 
+                    AND created_at <= %s + INTERVAL '1 day'
+            """, (website_id, start_date, end_date))
+            
+            summary = cur.fetchone()
+            
+            result = {
+                'website': {
+                    'id': website['id'],
+                    'domain': website['domain']
+                },
+                'date_range': {
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'granularity': granularity
+                },
+                'summary': {
+                    'total_unique_visitors': summary['total_unique_visitors'] or 0,
+                    'total_events': summary['total_events'] or 0,
+                    'total_consents': summary['total_consents'] or 0,
+                    'total_revenue': float(summary['total_revenue'] or 0),
+                    'avg_consent_rate': float(summary['avg_consent_rate'] or 0)
+                },
+                'analytics_data': [
+                    {
+                        'period': row['period_label'],
+                        'unique_visitors': row['unique_visitors'],
+                        'total_events': row['total_events'],
+                        'consents': row['consents'],
+                        'revenue': float(row['revenue'] or 0),
+                        'consent_rate': float(row['consent_rate'] or 0),
+                        'page_views': row['page_views'],
+                        'privacy_clicks': row['privacy_clicks']
+                    } for row in analytics_data
+                ],
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            # Cache for 5 minutes (historical data changes less frequently)
+            set_cache(cache_key_str, json.dumps(result), 300)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            logger.error(f"Website analytics error: {e}")
+            return jsonify({'error': f'Failed to get analytics: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Website analytics error: {e}")
+        return jsonify({'error': f'Failed to get analytics: {str(e)}'}), 500
+
+@app.route('/api/user/dashboard-summary', methods=['GET'])
+@jwt_required()
+def get_dashboard_summary():
+    """Get overall dashboard summary for authenticated user"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        # Check cache
+        cache_key_str = cache_key("dashboard_summary", user_id)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Get user's websites
+            cur.execute("""
+                SELECT id, domain, status, visitors_today, consent_rate, revenue_today, client_id
+                FROM websites 
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+            """, (user_id,))
+            
+            websites = cur.fetchall()
+            
+            # Get overall statistics
+            cur.execute("""
+                SELECT 
+                    COUNT(DISTINCT ae.visitor_id) as total_visitors,
+                    COUNT(CASE WHEN ae.consent_given = true THEN 1 END) as total_consents,
+                    SUM(ae.revenue_generated) as total_revenue,
+                    AVG(CASE WHEN ae.consent_given = true THEN 100.0 ELSE 0.0 END) as avg_consent_rate
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s AND ae.created_at >= CURRENT_DATE
+            """, (user_id,))
+            
+            today_stats = cur.fetchone()
+            
+            # Get monthly statistics
+            cur.execute("""
+                SELECT 
+                    COUNT(DISTINCT ae.visitor_id) as monthly_visitors,
+                    SUM(ae.revenue_generated) as monthly_revenue
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s AND ae.created_at >= DATE_TRUNC('month', CURRENT_DATE)
+            """, (user_id,))
+            
+            monthly_stats = cur.fetchone()
+            
+            # Get user's revenue balance
+            cur.execute("""
+                SELECT revenue_balance FROM users WHERE id = %s
+            """, (user_id,))
+            
+            user_data = cur.fetchone()
+            
+            # Get recent activity (last 7 days)
+            cur.execute("""
+                SELECT 
+                    DATE(ae.created_at) as date,
+                    COUNT(DISTINCT ae.visitor_id) as visitors,
+                    COUNT(CASE WHEN ae.consent_given = true THEN 1 END) as consents,
+                    SUM(ae.revenue_generated) as revenue
+                FROM analytics_events ae
+                JOIN websites w ON ae.website_id = w.id
+                WHERE w.user_id = %s AND ae.created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY DATE(ae.created_at)
+                ORDER BY date DESC
+            """, (user_id,))
+            
+            recent_activity = cur.fetchall()
+            
+            result = {
+                'websites': [
+                    {
+                        'id': site['id'],
+                        'domain': site['domain'],
+                        'status': site['status'],
+                        'visitors_today': site['visitors_today'],
+                        'consent_rate': float(site['consent_rate'] or 0),
+                        'revenue_today': float(site['revenue_today'] or 0),
+                        'client_id': site['client_id']
+                    } for site in websites
+                ],
+                'today_stats': {
+                    'total_visitors': today_stats['total_visitors'] or 0,
+                    'total_consents': today_stats['total_consents'] or 0,
+                    'total_revenue': float(today_stats['total_revenue'] or 0),
+                    'avg_consent_rate': float(today_stats['avg_consent_rate'] or 0)
+                },
+                'monthly_stats': {
+                    'monthly_visitors': monthly_stats['monthly_visitors'] or 0,
+                    'monthly_revenue': float(monthly_stats['monthly_revenue'] or 0)
+                },
+                'user_stats': {
+                    'revenue_balance': float(user_data['revenue_balance'] or 0),
+                    'total_websites': len(websites),
+                    'active_websites': len([w for w in websites if w['status'] == 'active'])
+                },
+                'recent_activity': [
+                    {
+                        'date': row['date'].strftime('%Y-%m-%d'),
+                        'visitors': row['visitors'],
+                        'consents': row['consents'],
+                        'revenue': float(row['revenue'] or 0)
+                    } for row in recent_activity
+                ],
+                'last_updated': datetime.now().isoformat()
+            }
+            
+            # Cache for 1 minute (dashboard needs frequent updates)
+            set_cache(cache_key_str, json.dumps(result), 60)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            logger.error(f"Dashboard summary error: {e}")
+            return jsonify({'error': f'Failed to get dashboard summary: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Dashboard summary error: {e}")
+        return jsonify({'error': f'Failed to get dashboard summary: {str(e)}'}), 500
+
+@app.route('/api/websites/list', methods=['GET'])
+@jwt_required()
+def list_user_websites():
+    """Get list of user's websites for selection interface"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        # Check cache
+        cache_key_str = cache_key("user_websites", user_id)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                SELECT 
+                    id, 
+                    domain, 
+                    status, 
+                    visitors_today, 
+                    consent_rate, 
+                    revenue_today,
+                    client_id,
+                    created_at
+                FROM websites 
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+            """, (user_id,))
+            
+            websites = cur.fetchall()
+            
+            result = {
+                'websites': [
+                    {
+                        'id': site['id'],
+                        'domain': site['domain'],
+                        'status': site['status'],
+                        'visitors_today': site['visitors_today'],
+                        'consent_rate': float(site['consent_rate'] or 0),
+                        'revenue_today': float(site['revenue_today'] or 0),
+                        'client_id': site['client_id'],
+                        'created_at': site['created_at'].isoformat()
+                    } for site in websites
+                ],
+                'total_count': len(websites)
+            }
+            
+            # Cache for 2 minutes
+            set_cache(cache_key_str, json.dumps(result), 120)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            logger.error(f"List websites error: {e}")
+            return jsonify({'error': f'Failed to list websites: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"List websites error: {e}")
+        return jsonify({'error': f'Failed to list websites: {str(e)}'}), 500
+
+# ===== CACHE INVALIDATION HELPERS =====
+
+def invalidate_user_cache(user_id):
+    """Invalidate all cache entries for a user"""
+    patterns = [
+        f"dashboard_summary:{user_id}",
+        f"user_websites:{user_id}",
+        f"website_metrics:{user_id}:*",
+        f"website_analytics:{user_id}:*"
+    ]
+    
+    if CACHE_ENABLED:
+        try:
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                if keys:
+                    redis_client.delete(*keys)
+        except:
+            pass
+    else:
+        # Clear in-memory cache
+        keys_to_remove = [k for k in cache_store.keys() if any(p.replace('*', '') in k for p in patterns)]
+        for key in keys_to_remove:
+            cache_store.pop(key, None)
+
+def invalidate_website_cache(user_id, website_id):
+    """Invalidate cache entries for a specific website"""
+    patterns = [
+        f"website_metrics:{user_id}:{website_id}",
+        f"website_analytics:{user_id}:{website_id}:*",
+        f"dashboard_summary:{user_id}",
+        f"user_websites:{user_id}"
+    ]
+    
+    if CACHE_ENABLED:
+        try:
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                if keys:
+                    redis_client.delete(*keys)
+        except:
+            pass
+    else:
+        keys_to_remove = [k for k in cache_store.keys() if any(p.replace('*', '') in k for p in patterns)]
+        for key in keys_to_remove:
+            cache_store.pop(key, None)
+
+# ===== ENHANCED EVENT TRACKING WITH CACHE INVALIDATION =====
+
+# Update the existing track_event function to invalidate cache
+def track_event_with_cache_invalidation():
+    """Enhanced track_event that invalidates relevant cache entries"""
+    # ... existing track_event code ...
+    
+    # After successful event tracking, invalidate cache
+    try:
+        # Find website and user_id from the event
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT w.user_id, w.id as website_id 
+                FROM websites w 
+                WHERE w.client_id = %s
+            """, (client_id,))
+            
+            result = cur.fetchone()
+            if result:
+                invalidate_website_cache(result['user_id'], result['website_id'])
+            
+            conn.close()
+    except Exception as e:
+        logger.error(f"Cache invalidation error: {e}")
+
+# ===== END OF PHASE 2 BACKEND ENHANCEMENTS =====
 
