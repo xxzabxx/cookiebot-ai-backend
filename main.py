@@ -1934,3 +1934,396 @@ def compliance_health_check():
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
+# ===== PHASE 1 ENHANCEMENTS - ADD THESE TO YOUR MAIN.PY =====
+
+# Add these imports at the top (after existing imports)
+import random
+import string
+
+# ===== CLIENT ID GENERATION SYSTEM =====
+def generate_client_id(user_id):
+    """Generate unique client ID for website tracking"""
+    timestamp = int(time.time())
+    random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"cb_{user_id}_{timestamp}_{random_suffix}"
+
+def generate_v3_integration_code(client_id, user_config=None):
+    """Generate complete V3 integration code with all configuration options"""
+    if not user_config:
+        user_config = {}
+    
+    # Default configuration
+    config = {
+        'company_name': user_config.get('company_name', ''),
+        'logo_url': user_config.get('logo_url', ''),
+        'banner_position': user_config.get('banner_position', 'bottom'),
+        'primary_color': user_config.get('primary_color', '#007bff'),
+        'background_color': user_config.get('background_color', '#ffffff'),
+        'text_color': user_config.get('text_color', '#333333'),
+        'border_radius': user_config.get('border_radius', '8'),
+        'banner_style': user_config.get('banner_style', 'modern'),
+        'theme': user_config.get('theme', 'light'),
+        'button_style': user_config.get('button_style', 'rounded'),
+        'compliance_mode': user_config.get('compliance_mode', 'gdpr'),
+        'auto_block': user_config.get('auto_block', 'true'),
+        'granular_consent': user_config.get('granular_consent', 'true'),
+        'show_decline': user_config.get('show_decline', 'true'),
+        'privacy_insights_frequency': user_config.get('privacy_insights_frequency', '5000'),
+        'revenue_share': user_config.get('revenue_share', '0.6'),
+        'consent_expiry': user_config.get('consent_expiry', '365'),
+        'language': user_config.get('language', 'auto')
+    }
+    
+    # Generate data attributes
+    data_attrs = []
+    for key, value in config.items():
+        if value:  # Only include non-empty values
+            attr_name = key.replace('_', '-')
+            data_attrs.append(f'data-{attr_name}="{value}"')
+    
+    integration_code = f'''<!-- CookieBot.ai V3 Integration Code -->
+<script
+    src="https://cookiebot-ai-backend.vercel.app/static/enhanced_cookiebot_ai_v3.js"
+    data-cbid="{client_id}"
+    data-api-endpoint="https://cookiebot-ai-backend.vercel.app"
+    {chr(10).join('    ' + attr for attr in data_attrs)}
+    async>
+</script>'''
+    
+    return integration_code
+
+# ===== DASHBOARD CONFIGURATION MANAGEMENT =====
+@app.route('/api/user/dashboard-config', methods=['GET', 'POST'])
+@jwt_required()
+def dashboard_config():
+    """Get or update user dashboard configuration"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            if request.method == 'GET':
+                # Get user's dashboard configuration
+                cur.execute("""
+                    SELECT config FROM user_dashboard_configs 
+                    WHERE user_id = %s
+                """, (user_id,))
+                
+                result = cur.fetchone()
+                if result:
+                    return jsonify({'config': result['config']})
+                else:
+                    # Return default configuration
+                    default_config = {
+                        'company_name': '',
+                        'logo_url': '',
+                        'banner_position': 'bottom',
+                        'primary_color': '#007bff',
+                        'background_color': '#ffffff',
+                        'text_color': '#333333',
+                        'border_radius': '8',
+                        'banner_style': 'modern',
+                        'theme': 'light',
+                        'button_style': 'rounded',
+                        'compliance_mode': 'gdpr',
+                        'auto_block': 'true',
+                        'granular_consent': 'true',
+                        'show_decline': 'true',
+                        'privacy_insights_frequency': '5000',
+                        'revenue_share': '0.6',
+                        'consent_expiry': '365',
+                        'language': 'auto'
+                    }
+                    return jsonify({'config': default_config})
+            
+            elif request.method == 'POST':
+                # Update user's dashboard configuration
+                data = request.get_json()
+                config = data.get('config', {})
+                
+                # Upsert configuration
+                cur.execute("""
+                    INSERT INTO user_dashboard_configs (user_id, config, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET config = %s, updated_at = CURRENT_TIMESTAMP
+                """, (user_id, json.dumps(config), json.dumps(config)))
+                
+                # Regenerate integration codes for all user's websites
+                cur.execute("""
+                    SELECT id, client_id FROM websites WHERE user_id = %s
+                """, (user_id,))
+                
+                websites = cur.fetchall()
+                for website in websites:
+                    if website['client_id']:
+                        new_integration_code = generate_v3_integration_code(website['client_id'], config)
+                        cur.execute("""
+                            UPDATE websites 
+                            SET integration_code = %s, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s
+                        """, (new_integration_code, website['id']))
+                
+                conn.commit()
+                
+                return jsonify({
+                    'message': 'Configuration updated successfully',
+                    'websites_updated': len(websites)
+                })
+                
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Dashboard config error: {e}")
+            return jsonify({'error': f'Configuration failed: {str(e)}'}), 500
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        logger.error(f"Dashboard config error: {e}")
+        return jsonify({'error': f'Configuration failed: {str(e)}'}), 500
+
+# ===== ENHANCED WEBSITE MANAGEMENT =====
+# Replace the existing add_website function with this enhanced version:
+
+@app.route('/api/websites', methods=['POST'])
+@jwt_required()
+def add_website_enhanced():
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        domain = data.get('domain')
+        
+        if not domain:
+            return jsonify({'error': 'Domain is required'}), 400
+        
+        # Clean domain (remove protocol, www, trailing slash)
+        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Check if domain already exists for this user
+            cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
+            if cur.fetchone():
+                return jsonify({'error': 'Domain already exists'}), 409
+            
+            # Generate client ID
+            client_id = generate_client_id(user_id)
+            
+            # Get user's dashboard configuration
+            cur.execute("""
+                SELECT config FROM user_dashboard_configs WHERE user_id = %s
+            """, (user_id,))
+            
+            config_result = cur.fetchone()
+            user_config = config_result['config'] if config_result else {}
+            
+            # Generate V3 integration code
+            integration_code = generate_v3_integration_code(client_id, user_config)
+            
+            # Add new website with client_id
+            cur.execute("""
+                INSERT INTO websites (user_id, domain, client_id, integration_code)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, domain, status, visitors_today, consent_rate, revenue_today, created_at
+            """, (user_id, domain, client_id, integration_code))
+            
+            website = cur.fetchone()
+            conn.commit()
+            
+            return jsonify({
+                'message': 'Website added successfully',
+                'website': {
+                    'id': website['id'],
+                    'domain': website['domain'],
+                    'status': website['status'],
+                    'visitors_today': website['visitors_today'],
+                    'consent_rate': float(website['consent_rate']),
+                    'revenue_today': float(website['revenue_today']),
+                    'client_id': client_id,
+                    'integration_code': integration_code
+                }
+            }), 201
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Add website error: {e}")
+            return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Add website error: {e}")
+        return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+
+# ===== ENHANCED EVENT TRACKING =====
+# Replace the existing track_event function with this enhanced version:
+
+@app.route('/api/public/track', methods=['POST'])
+def track_event_enhanced():
+    try:
+        data = request.get_json()
+        client_id = data.get('client_id')
+        event_type = data.get('event_type', 'page_view')
+        visitor_id = data.get('visitor_id')
+        consent_given = data.get('consent_given')
+        metadata = data.get('metadata', {})
+        
+        if not client_id:
+            return jsonify({'error': 'Client ID is required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Find website by client_id
+            cur.execute("""
+                SELECT id, user_id FROM websites WHERE client_id = %s
+            """, (client_id,))
+            
+            website = cur.fetchone()
+            if not website:
+                return jsonify({'error': 'Website not found'}), 404
+            
+            website_id = website['id']
+            
+            # Enhanced revenue calculation based on event type
+            revenue_rates = {
+                'page_view': 0.01,
+                'consent_given': 0.05,
+                'privacy_insight_click': 0.15,
+                'form_submission': 0.10,
+                'newsletter_signup': 0.08,
+                'download': 0.06,
+                'video_play': 0.04,
+                'social_share': 0.03,
+                'cookie_preference_update': 0.02,
+                'banner_interaction': 0.01
+            }
+            
+            base_revenue = revenue_rates.get(event_type, 0.01)
+            
+            # Quality multipliers
+            quality_multiplier = 1.0
+            if consent_given:
+                quality_multiplier += 0.5  # 50% bonus for consent
+            if metadata.get('engagement_time', 0) > 30:
+                quality_multiplier += 0.2  # 20% bonus for engagement
+            if metadata.get('return_visitor'):
+                quality_multiplier += 0.1  # 10% bonus for return visitors
+            
+            revenue = base_revenue * quality_multiplier
+            
+            # Insert analytics event
+            cur.execute("""
+                INSERT INTO analytics_events (website_id, event_type, visitor_id, consent_given, revenue_generated, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (website_id, event_type, visitor_id, consent_given, revenue, json.dumps(metadata)))
+            
+            event_id = cur.fetchone()['id']
+            
+            # Update website stats
+            cur.execute("""
+                UPDATE websites 
+                SET visitors_today = visitors_today + 1,
+                    revenue_today = revenue_today + %s,
+                    consent_rate = (
+                        SELECT COALESCE(AVG(CASE WHEN consent_given THEN 100.0 ELSE 0.0 END), 0)
+                        FROM analytics_events 
+                        WHERE website_id = %s AND created_at >= CURRENT_DATE
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (revenue, website_id, website_id))
+            
+            # Update user's revenue balance
+            cur.execute("""
+                UPDATE users 
+                SET revenue_balance = COALESCE(revenue_balance, 0) + %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (revenue * 0.6, website['user_id']))  # 60% revenue share
+            
+            conn.commit()
+            
+            return jsonify({
+                'message': 'Event tracked successfully',
+                'event_id': event_id,
+                'revenue_generated': revenue,
+                'quality_multiplier': quality_multiplier
+            }), 200
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Enhanced tracking error: {e}")
+            return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Enhanced tracking error: {e}")
+        return jsonify({'error': f'Failed to track event: {str(e)}'}), 500
+
+# ===== INTEGRATION CODE ENDPOINT =====
+@app.route('/api/websites/<int:website_id>/integration-code', methods=['GET'])
+@jwt_required()
+def get_integration_code(website_id):
+    """Get the integration code for a specific website"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Get website and verify ownership
+            cur.execute("""
+                SELECT client_id, integration_code, domain 
+                FROM websites 
+                WHERE id = %s AND user_id = %s
+            """, (website_id, user_id))
+            
+            website = cur.fetchone()
+            if not website:
+                return jsonify({'error': 'Website not found'}), 404
+            
+            return jsonify({
+                'client_id': website['client_id'],
+                'integration_code': website['integration_code'],
+                'domain': website['domain'],
+                'instructions': [
+                    'Copy the integration code below',
+                    'Paste it in the <head> section of your website',
+                    'The script will automatically start tracking visitors',
+                    'Check your dashboard for real-time analytics'
+                ]
+            })
+            
+        except Exception as e:
+            logger.error(f"Integration code error: {e}")
+            return jsonify({'error': f'Failed to get integration code: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Integration code error: {e}")
+        return jsonify({'error': f'Failed to get integration code: {str(e)}'}), 500
+
+# ===== END OF PHASE 1 ENHANCEMENTS =====
+
