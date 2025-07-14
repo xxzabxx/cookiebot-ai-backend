@@ -2330,7 +2330,6 @@ def get_integration_code(website_id):
 
 # Add these imports at the top (after existing imports)
 from functools import wraps
-import redis
 from datetime import datetime, timedelta
 import json
 from collections import defaultdict
@@ -2338,6 +2337,7 @@ from collections import defaultdict
 # ===== CACHING SYSTEM =====
 # Initialize Redis for caching (fallback to in-memory if Redis unavailable)
 try:
+    import redis
     redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'), decode_responses=True)
     redis_client.ping()
     CACHE_ENABLED = True
