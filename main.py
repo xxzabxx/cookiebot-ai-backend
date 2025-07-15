@@ -144,7 +144,7 @@ def get_db_connection():
             host=parsed.hostname,
             port=parsed.port,
             database=parsed.path[1:],
-            ssl_context=True
+            ssl_context={'sslmode': 'require'}
         )
         return conn
     except Exception as e:
