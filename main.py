@@ -149,7 +149,7 @@ def get_db_connection():
             host=parsed.hostname,
             port=parsed.port,
             database=parsed.path[1:],
-            sslmode='require'
+            ssl_context=None
         )
         return conn
     except Exception as e:
