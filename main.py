@@ -17,6 +17,10 @@ from urllib.parse import urlparse, urljoin
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import socket
+import os
+from urllib.parse import urlparse
+import logging
 
 # ===== PAYMENT SYSTEM IMPORTS (NEW) =====
 import stripe
