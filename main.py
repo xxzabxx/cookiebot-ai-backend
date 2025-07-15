@@ -17,10 +17,6 @@ from urllib.parse import urlparse, urljoin
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import socket
-import os
-from urllib.parse import urlparse
-import logging
 
 # ===== PAYMENT SYSTEM IMPORTS (NEW) =====
 import stripe
@@ -144,6 +140,10 @@ def serve_static(filename):
 
 # Database connection
 def get_db_connection():
+     import socket
+import os
+from urllib.parse import urlparse
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -3522,4 +3522,3 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
-
