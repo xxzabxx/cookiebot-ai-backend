@@ -144,10 +144,6 @@ def serve_static(filename):
 
 # Database connection
 def get_db_connection():
-     import socket
-import os
-from urllib.parse import urlparse
-import logging
 
 logger = logging.getLogger(__name__)
 
