@@ -7,3 +7,4 @@ pg8000==1.30.3
 requests==2.31.0
 beautifulsoup4==4.12.2
 lxml==4.9.3
+stripe==5.5.0
