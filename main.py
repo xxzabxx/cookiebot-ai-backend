@@ -2,8 +2,32 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pg8000.dbapi as psycopg2
+# Custom RealDictCursor implementation for pg8000 compatibility
+class RealDictCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.description = None
+    
+    def execute(self, query, params=None):
+        result = self.cursor.execute(query, params)
+        self.description = self.cursor.description
+        return result
+    
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row and self.description:
+            return dict(zip([desc[0] for desc in self.description], row))
+        return row
+    
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        if rows and self.description:
+            return [dict(zip([desc[0] for desc in self.description], row)) for row in rows]
+        return rows
+    
+    def close(self):
+        return self.cursor.close()
 import bcrypt
 from datetime import datetime, timedelta
 import uuid
@@ -57,8 +81,8 @@ def serve_static(filename):
 def get_db_connection():
     try:
         conn = psycopg2.connect(
-            os.environ.get('DATABASE_URL'),
-            cursor_factory=RealDictCursor
+            os.environ.get('DATABASE_URL')
+            
         )
         return conn
     except Exception as e:
@@ -73,7 +97,7 @@ def init_db():
         return False
     
     try:
-        cur = conn.cursor()
+        cur = RealDictCursor(conn.cursor())
         
         # Users table
         cur.execute('''
@@ -566,7 +590,7 @@ def register():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Check if user exists
             cur.execute("SELECT id FROM users WHERE email = %s", (email,))
@@ -629,7 +653,7 @@ def login():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Get user
             cur.execute("""
@@ -683,7 +707,7 @@ def get_profile():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             cur.execute("""
                 SELECT id, email, first_name, last_name, company, 
@@ -732,7 +756,7 @@ def get_websites():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             cur.execute("""
                 SELECT id, domain, status, visitors_today, consent_rate, 
@@ -787,7 +811,7 @@ def add_website():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Check if domain already exists for this user
             cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
@@ -855,7 +879,7 @@ def get_dashboard_analytics():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Get user's total revenue
             cur.execute("""
@@ -924,7 +948,7 @@ def track_event():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Calculate revenue (example: $0.01 per visitor, $0.05 if consent given)
             revenue = 0.05 if consent_given else 0.01
@@ -993,7 +1017,7 @@ def cookie_scan():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Find or create website record
             cur.execute("""
@@ -1383,7 +1407,7 @@ def track_privacy_insight_click():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Store the click event in analytics_events table
             cur.execute("""
@@ -1457,7 +1481,7 @@ def get_privacy_insights_stats():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Get total privacy insight clicks and revenue
             cur.execute("""
@@ -1559,7 +1583,7 @@ def privacy_insights_config():
                 if not website_id:
                     return jsonify({'error': 'Website ID required'}), 400
                 
-                cur = conn.cursor()
+                cur = RealDictCursor(conn.cursor())
                 cur.execute("""
                     SELECT integration_code, domain, status
                     FROM websites 
@@ -1599,7 +1623,7 @@ def privacy_insights_config():
                     return jsonify({'error': 'Website ID required'}), 400
                 
                 # Validate website ownership
-                cur = conn.cursor()
+                cur = RealDictCursor(conn.cursor())
                 cur.execute("""
                     SELECT id FROM websites 
                     WHERE id = %s AND user_id = %s
@@ -1701,7 +1725,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
                 try:
                     conn = get_db_connection()
                     if conn:
-                        cur = conn.cursor()
+                        cur = RealDictCursor(conn.cursor())
                         cur.execute("""
                             INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                             VALUES (%s, %s, %s, %s, %s)
@@ -1753,7 +1777,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
             try:
                 conn = get_db_connection()
                 if conn:
-                    cur = conn.cursor()
+                    cur = RealDictCursor(conn.cursor())
                     cur.execute("""
                         INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                         VALUES (%s, %s, %s, %s, %s)
@@ -1791,7 +1815,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
             try:
                 conn = get_db_connection()
                 if conn:
-                    cur = conn.cursor()
+                    cur = RealDictCursor(conn.cursor())
                     cur.execute("""
                         INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                         VALUES (%s, %s, %s, %s, %s)
@@ -1844,7 +1868,7 @@ def health_check():
             }), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             cur.execute("SELECT 1 as test, version() as db_version")
             result = cur.fetchone()
             cur.close()
@@ -2005,7 +2029,7 @@ def dashboard_config():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             if request.method == 'GET':
                 # Get user's dashboard configuration
@@ -2109,7 +2133,7 @@ def add_website_enhanced():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Check if domain already exists for this user
             cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
@@ -2186,7 +2210,7 @@ def track_event_enhanced():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Find website by client_id
             cur.execute("""
@@ -2290,7 +2314,7 @@ def get_integration_code(website_id):
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Get website and verify ownership
             cur.execute("""
@@ -2393,7 +2417,7 @@ def get_website_metrics(website_id):
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Verify website ownership
             cur.execute("""
@@ -2524,7 +2548,7 @@ def get_website_analytics(website_id):
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Verify website ownership
             cur.execute("""
@@ -2650,7 +2674,7 @@ def get_dashboard_summary():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             # Get user's websites
             cur.execute("""
@@ -2782,7 +2806,7 @@ def list_user_websites():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             
             cur.execute("""
                 SELECT 
@@ -2891,7 +2915,7 @@ def track_event_with_cache_invalidation():
         # Find website and user_id from the event
         conn = get_db_connection()
         if conn:
-            cur = conn.cursor()
+            cur = RealDictCursor(conn.cursor())
             cur.execute("""
                 SELECT w.user_id, w.id as website_id 
                 FROM websites w 
