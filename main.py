@@ -98,29 +98,24 @@ def cache_key(*args):
 class RealDictCursor:
     def __init__(self, cursor):
         self.cursor = cursor
-        self.description = cursor.description
-
+        self.description = None
+    
+    def execute(self, query, params=None):
+        result = self.cursor.execute(query, params)
+        self.description = self.cursor.description
+        return result
+    
     def fetchone(self):
         row = self.cursor.fetchone()
         if row and self.description:
             return dict(zip([desc[0] for desc in self.description], row))
         return row
-
+    
     def fetchall(self):
         rows = self.cursor.fetchall()
-        if self.description:
+        if rows and self.description:
             return [dict(zip([desc[0] for desc in self.description], row)) for row in rows]
         return rows
-
-    def execute(self, *args, **kwargs):
-        return self.cursor.execute(*args, **kwargs)
-
-    def close(self):
-        return self.cursor.close()
-    
-    @property
-    def rowcount(self):
-        return self.cursor.rowcount
 
 # ===== STATIC FILE SERVING ROUTE (NEW) =====
 @app.route('/static/<path:filename>')
