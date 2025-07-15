@@ -140,56 +140,38 @@ def serve_static(filename):
 
 # Database connection
 def get_db_connection():
-     import socket
-import os
-from urllib.parse import urlparse
-import logging
-
-logger = logging.getLogger(__name__)
-
-def get_db_connection():
+    logger = logging.getLogger(__name__)
     try:
         database_url = os.environ.get("DATABASE_URL")
+        if not database_url:
+            logger.error("DATABASE_URL environment variable not set.")
+            return None
+
         parsed = urlparse(database_url)
         
-        # --- ADD THIS SECTION FOR DIAGNOSTICS ---
+        # --- DIAGNOSTICS SECTION ---
         try:
             ip_address = socket.gethostbyname(parsed.hostname)
-            logger.info(f"Resolved Supabase host {parsed.hostname} to IP: {ip_address}")
+            logger.info(f"Successfully resolved Supabase host 	\'{parsed.hostname}\' to IP: {ip_address}")
         except socket.gaierror as e:
-            logger.error(f"DNS resolution failed for {parsed.hostname}: {e}")
+            logger.error(f"DNS resolution failed for host 	\'{parsed.hostname}\': {e}")
             return None
         # --- END DIAGNOSTICS SECTION ---
 
-        conn = psycopg2.connect(
+        conn = pg8000.dbapi.connect(
             user=parsed.username,
             password=parsed.password,
             host=parsed.hostname,
             port=parsed.port,
             database=parsed.path[1:],
-            ssl_context=None
+            ssl_context=None # Using ssl_context=None as sslmode=	\'require\' caused issues
         )
+        logger.info(f"Database connection to {parsed.hostname} successful.")
         return conn
+
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         return None
-    try:
-        database_url = os.environ.get('DATABASE_URL')
-        parsed = urlparse(database_url)
-        conn = psycopg2.connect(
-            user=parsed.username,
-            password=parsed.password,
-            host=parsed.hostname,
-            port=parsed.port,
-            database=parsed.path[1:],
-            ssl_context=None
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        return None
-
-
 
 # Initialize database tables
 def init_db():
