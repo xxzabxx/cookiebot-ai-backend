@@ -1,15 +1,15 @@
-import pg8000.dbapi as psycopg2
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import bcrypt
 from datetime import datetime, timedelta, date
 import uuid
 import json
 import logging
 import requests
-import socket
 from bs4 import BeautifulSoup
 import re
 import threading
@@ -23,11 +23,6 @@ from email.mime.multipart import MIMEMultipart
 import stripe
 from decimal import Decimal
 from functools import wraps
-
-# ===== PHASE 1 & 2 IMPORTS =====
-import random
-import string
-from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -56,78 +51,6 @@ CORS(app,
 # Global storage for active scans
 active_scans = {}
 
-# ===== CACHING SYSTEM (PHASE 2) =====
-# Initialize Redis for caching (fallback to in-memory if Redis unavailable)
-try:
-    import redis
-    redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'), decode_responses=True)
-    redis_client.ping()
-    CACHE_ENABLED = True
-    logger.info("Redis cache enabled")
-except:
-    CACHE_ENABLED = False
-    cache_store = {}
-    logger.info("Using in-memory cache (Redis unavailable)")
-
-def get_cache(key):
-    """Get value from cache"""
-    if CACHE_ENABLED:
-        try:
-            return redis_client.get(key)
-        except:
-            return None
-    else:
-        return cache_store.get(key)
-
-def set_cache(key, value, ttl=300):
-    """Set value in cache with TTL (default 5 minutes)"""
-    if CACHE_ENABLED:
-        try:
-            redis_client.setex(key, ttl, value)
-        except:
-            pass
-    else:
-        cache_store[key] = value
-        # Simple TTL for in-memory cache
-        threading.Timer(ttl, lambda: cache_store.pop(key, None)).start()
-
-def cache_key(*args):
-    """Generate cache key from arguments"""
-    return ":".join(str(arg) for arg in args)
-
-# ===== REAL DICT CURSOR FOR PG8000 =====
-class RealDictCursor:
-    def __init__(self, cursor):
-        self.cursor = cursor
-        self._description = None
-    
-    @property
-    def description(self):
-        return getattr(self.cursor, 'description', None)
-    
-    def execute(self, query, params=None):
-        result = self.cursor.execute(query, params)
-        return result
-    
-    def fetchone(self):
-        row = self.cursor.fetchone()
-        if row and self.description:
-            return dict(zip([desc[0] for desc in self.description], row))
-        return row
-    
-    def fetchall(self):
-        rows = self.cursor.fetchall()
-        if rows and self.description:
-            return [dict(zip([desc[0] for desc in self.description], row)) for row in rows]
-        return rows
-    
-    def close(self):
-        return self.cursor.close()
-    
-    @property
-    def rowcount(self):
-        return getattr(self.cursor, 'rowcount', 0)
-
 # ===== STATIC FILE SERVING ROUTE (NEW) =====
 @app.route('/static/<path:filename>')
 def serve_static(filename):
@@ -141,35 +64,12 @@ def serve_static(filename):
 
 # Database connection
 def get_db_connection():
-    logger = logging.getLogger(__name__)
     try:
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            logger.error("DATABASE_URL environment variable not set.")
-            return None
-
-        parsed = urlparse(database_url)
-        
-        # --- DIAGNOSTICS SECTION ---
-        try:
-            ip_address = socket.gethostbyname(parsed.hostname)
-            logger.info(f"Successfully resolved Supabase host 	\'{parsed.hostname}\' to IP: {ip_address}")
-        except socket.gaierror as e:
-            logger.error(f"DNS resolution failed for host 	\'{parsed.hostname}\': {e}")
-            return None
-        # --- END DIAGNOSTICS SECTION ---
-
-        conn = pg8000.dbapi.connect(
-            user=parsed.username,
-            password=parsed.password,
-            host=parsed.hostname,
-            port=parsed.port,
-            database=parsed.path[1:],
-            ssl_context=None # Using ssl_context=None as sslmode=	\'require\' caused issues
+        conn = psycopg2.connect(
+            os.environ.get('DATABASE_URL'),
+            cursor_factory=RealDictCursor
         )
-        logger.info(f"Database connection to {parsed.hostname} successful.")
         return conn
-
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         return None
@@ -182,7 +82,7 @@ def init_db():
         return False
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Users table
         cur.execute('''
@@ -195,12 +95,6 @@ def init_db():
                 company VARCHAR(255),
                 subscription_tier VARCHAR(50) DEFAULT 'free',
                 revenue_balance DECIMAL(10,2) DEFAULT 0.00,
-                stripe_customer_id VARCHAR(255),
-                stripe_subscription_id VARCHAR(255),
-                subscription_status VARCHAR(50) DEFAULT 'active',
-                subscription_started_at TIMESTAMP,
-                payment_failed_at TIMESTAMP,
-                is_admin BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -212,7 +106,6 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 domain VARCHAR(255) NOT NULL,
-                client_id VARCHAR(255) UNIQUE,
                 status VARCHAR(50) DEFAULT 'pending',
                 visitors_today INTEGER DEFAULT 0,
                 consent_rate DECIMAL(5,2) DEFAULT 0.00,
@@ -250,136 +143,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-
-        # ===== PAYMENT SYSTEM TABLES (NEW) =====
-        
-        # Subscription plans table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS subscription_plans (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(50) UNIQUE NOT NULL,
-                monthly_price DECIMAL(10,2) NOT NULL,
-                website_limit INTEGER,
-                api_call_limit INTEGER,
-                support_ticket_limit INTEGER,
-                revenue_share DECIMAL(3,2) DEFAULT 0.60,
-                features JSONB,
-                stripe_price_id VARCHAR(255),
-                active BOOLEAN DEFAULT TRUE,
-                sort_order INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Subscription events table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS subscription_events (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                event_type VARCHAR(50) NOT NULL,
-                from_plan VARCHAR(50),
-                to_plan VARCHAR(50),
-                amount DECIMAL(10,2),
-                stripe_event_id VARCHAR(255),
-                stripe_subscription_id VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Payout methods table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS payout_methods (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                provider VARCHAR(50) NOT NULL,
-                account_id VARCHAR(255) NOT NULL,
-                status VARCHAR(50) DEFAULT 'pending',
-                is_primary BOOLEAN DEFAULT FALSE,
-                details JSONB,
-                verification_data JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Payouts table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS payouts (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                payout_method_id INTEGER REFERENCES payout_methods(id),
-                amount DECIMAL(10,2) NOT NULL,
-                currency VARCHAR(3) DEFAULT 'USD',
-                provider VARCHAR(50) NOT NULL,
-                status VARCHAR(50) DEFAULT 'pending',
-                fee_amount DECIMAL(10,2) DEFAULT 0.00,
-                net_amount DECIMAL(10,2),
-                external_payout_id VARCHAR(255),
-                failure_reason TEXT,
-                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                processed_at TIMESTAMP,
-                completed_at TIMESTAMP
-            )
-        ''')
-        
-        # Usage tracking table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS usage_tracking (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                month DATE NOT NULL,
-                websites_created INTEGER DEFAULT 0,
-                api_calls_made INTEGER DEFAULT 0,
-                support_tickets_created INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, month)
-            )
-        ''')
-        
-        # Admin activity log table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS admin_activity_log (
-                id SERIAL PRIMARY KEY,
-                admin_user_id INTEGER REFERENCES users(id),
-                action VARCHAR(100) NOT NULL,
-                target_user_id INTEGER REFERENCES users(id),
-                details JSONB,
-                ip_address INET,
-                user_agent TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # ===== PHASE 1 ENHANCEMENT TABLES =====
-        
-        # User dashboard configs table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS user_dashboard_configs (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-                config JSONB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Insert default subscription plans if they don't exist
-        cur.execute("SELECT COUNT(*) as count FROM subscription_plans")
-        if cur.fetchone()['count'] == 0:
-            plans = [
-                ('free', 0.00, 1, 1000, 1, 0.60, '["Basic analytics", "1 website", "Email support"]', None, True, 1),
-                ('starter', 29.00, 5, 10000, 5, 0.60, '["Advanced analytics", "5 websites", "Priority support", "Custom branding"]', 'price_starter_monthly', True, 2),
-                ('professional', 99.00, 25, 50000, 20, 0.65, '["Professional analytics", "25 websites", "Phone support", "API access", "White-label"]', 'price_pro_monthly', True, 3),
-                ('enterprise', 299.00, -1, -1, -1, 0.70, '["Enterprise analytics", "Unlimited websites", "Dedicated support", "Custom integrations"]', 'price_enterprise_monthly', True, 4)
-            ]
-            
-            for plan in plans:
-                cur.execute("""
-                    INSERT INTO subscription_plans 
-                    (name, monthly_price, website_limit, api_call_limit, support_ticket_limit, revenue_share, features, stripe_price_id, active, sort_order)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, plan)
         
         conn.commit()
         logger.info("Database tables initialized successfully")
@@ -396,24 +159,33 @@ def init_db():
 # Initialize database on startup
 init_db()
 
-
 # Real Website Analyzer Class
 class RealWebsiteAnalyzer:
     def __init__(self):
         self.tracking_services = {
-            'google_analytics': {
+            'google-analytics': {
                 'patterns': [r'google-analytics\.com', r'googletagmanager\.com', r'gtag\(', r'ga\('],
                 'name': 'Google Analytics',
                 'category': 'statistics'
             },
-            'facebook_pixel': {
-                'patterns': [r'facebook\.net', r'fbevents\.js', r'fbq\('],
+            'facebook-pixel': {
+                'patterns': [r'facebook\.net.*fbevents', r'fbq\('],
                 'name': 'Facebook Pixel',
                 'category': 'marketing'
             },
+            'google-ads': {
+                'patterns': [r'googleadservices\.com', r'googlesyndication\.com'],
+                'name': 'Google Ads',
+                'category': 'marketing'
+            },
             'hotjar': {
-                'patterns': [r'hotjar\.com', r'hj\('],
+                'patterns': [r'hotjar\.com'],
                 'name': 'Hotjar',
+                'category': 'statistics'
+            },
+            'mixpanel': {
+                'patterns': [r'mixpanel\.com'],
+                'name': 'Mixpanel',
                 'category': 'statistics'
             },
             'intercom': {
@@ -421,10 +193,10 @@ class RealWebsiteAnalyzer:
                 'name': 'Intercom',
                 'category': 'functional'
             },
-            'mixpanel': {
-                'patterns': [r'mixpanel\.com', r'mixpanel\.track'],
-                'name': 'Mixpanel',
-                'category': 'statistics'
+            'zendesk': {
+                'patterns': [r'zendesk\.com', r'zdassets\.com'],
+                'name': 'Zendesk',
+                'category': 'functional'
             },
             'hubspot': {
                 'patterns': [r'hubspot\.com', r'hs-scripts\.com'],
@@ -803,7 +575,7 @@ def register():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Check if user exists
             cur.execute("SELECT id FROM users WHERE email = %s", (email,))
@@ -825,8 +597,6 @@ def register():
             
             # Create access token - FIX: Convert user ID to string
             access_token = create_access_token(identity=str(user['id']))
-
-
             
             return jsonify({
                 'message': 'User created successfully',
@@ -868,7 +638,7 @@ def login():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Get user
             cur.execute("""
@@ -922,7 +692,7 @@ def get_profile():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             cur.execute("""
                 SELECT id, email, first_name, last_name, company, 
@@ -971,7 +741,7 @@ def get_websites():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             cur.execute("""
                 SELECT id, domain, status, visitors_today, consent_rate, 
@@ -1006,6 +776,81 @@ def get_websites():
         logger.error(f"Get websites error: {e}")
         return jsonify({'error': f'Failed to get websites: {str(e)}'}), 500
 
+@app.route('/api/websites', methods=['POST'])
+@jwt_required()
+def add_website():
+    try:
+        # FIX: Convert JWT identity back to integer
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        domain = data.get('domain')
+        
+        if not domain:
+            return jsonify({'error': 'Domain is required'}), 400
+        
+        # Clean domain (remove protocol, www, trailing slash)
+        domain = domain.replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            # Check if domain already exists for this user
+            cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
+            if cur.fetchone():
+                return jsonify({'error': 'Domain already exists'}), 409
+            
+            # Generate integration code
+            integration_code = f"""
+<!-- CookieBot.ai Integration Code -->
+<script>
+(function() {{
+    var script = document.createElement('script');
+    script.src = 'https://api.cookiebot.ai/js/cookiebot.js';
+    script.setAttribute('data-website-id', '{uuid.uuid4()}');
+    script.setAttribute('data-domain', '{domain}');
+    document.head.appendChild(script);
+}})();
+</script>
+""".strip()
+            
+            # Add new website
+            cur.execute("""
+                INSERT INTO websites (user_id, domain, integration_code)
+                VALUES (%s, %s, %s)
+                RETURNING id, domain, status, visitors_today, consent_rate, revenue_today, created_at
+            """, (user_id, domain, integration_code))
+            
+            website = cur.fetchone()
+            conn.commit()
+            
+            return jsonify({
+                'message': 'Website added successfully',
+                'website': {
+                    'id': website['id'],
+                    'domain': website['domain'],
+                    'status': website['status'],
+                    'visitors_today': website['visitors_today'],
+                    'consent_rate': float(website['consent_rate']),
+                    'revenue_today': float(website['revenue_today']),
+                    'integration_code': integration_code
+                }
+            }), 201
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Add website error: {e}")
+            return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"Add website error: {e}")
+        return jsonify({'error': f'Failed to add website: {str(e)}'}), 500
+
 # Analytics routes
 @app.route('/api/analytics/dashboard', methods=['GET'])
 @jwt_required()
@@ -1019,7 +864,7 @@ def get_dashboard_analytics():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Get user's total revenue
             cur.execute("""
@@ -1088,7 +933,7 @@ def track_event():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Calculate revenue (example: $0.01 per visitor, $0.05 if consent given)
             revenue = 0.05 if consent_given else 0.01
@@ -1153,13 +998,11 @@ def cookie_scan():
             return jsonify({'error': 'Missing required fields: clientId, domain'}), 400
         
         conn = get_db_connection()
-
-
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Find or create website record
             cur.execute("""
@@ -1549,14 +1392,12 @@ def track_privacy_insight_click():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Store the click event in analytics_events table
             cur.execute("""
                 INSERT INTO analytics_events (website_id, event_type, visitor_id, consent_given, revenue_generated, metadata, created_at)
                 VALUES (
-
-
                     (SELECT id FROM websites WHERE integration_code LIKE %s LIMIT 1),
                     'privacy_insight_click',
                     %s,
@@ -1625,7 +1466,7 @@ def get_privacy_insights_stats():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Get total privacy insight clicks and revenue
             cur.execute("""
@@ -1678,21 +1519,21 @@ def get_privacy_insights_stats():
             top_insights = cur.fetchall()
             
             return jsonify({
-                'total_clicks': stats['total_clicks'] if stats else 0,
-                'total_revenue': float(stats['total_revenue']) if stats else 0.0,
-                'active_days': stats['active_days'] if stats else 0,
+                'total_clicks': stats[0] if stats else 0,
+                'total_revenue': float(stats[1]) if stats else 0.0,
+                'active_days': stats[2] if stats else 0,
                 'daily_stats': [
                     {
-                        'date': str(row['date']),
-                        'clicks': row['clicks'],
-                        'revenue': float(row['revenue'])
+                        'date': str(row[0]),
+                        'clicks': row[1],
+                        'revenue': float(row[2])
                     } for row in daily_stats
                 ],
                 'top_insights': [
                     {
-                        'insight_id': row['insight_id'],
-                        'clicks': row['clicks'],
-                        'revenue': float(row['revenue'])
+                        'insight_id': row[0],
+                        'clicks': row[1],
+                        'revenue': float(row[2])
                     } for row in top_insights
                 ]
             })
@@ -1727,7 +1568,7 @@ def privacy_insights_config():
                 if not website_id:
                     return jsonify({'error': 'Website ID required'}), 400
                 
-                cur = RealDictCursor(conn.cursor())
+                cur = conn.cursor()
                 cur.execute("""
                     SELECT integration_code, domain, status
                     FROM websites 
@@ -1751,9 +1592,9 @@ def privacy_insights_config():
                 return jsonify({
                     'website': {
                         'id': website_id,
-                        'domain': website['domain'],
-                        'integration_code': website['integration_code'],
-                        'status': website['status']
+                        'domain': website[1],
+                        'integration_code': website[0],
+                        'status': website[2]
                     },
                     'privacy_insights_config': config
                 })
@@ -1767,7 +1608,7 @@ def privacy_insights_config():
                     return jsonify({'error': 'Website ID required'}), 400
                 
                 # Validate website ownership
-                cur = RealDictCursor(conn.cursor())
+                cur = conn.cursor()
                 cur.execute("""
                     SELECT id FROM websites 
                     WHERE id = %s AND user_id = %s
@@ -1869,7 +1710,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
                 try:
                     conn = get_db_connection()
                     if conn:
-                        cur = RealDictCursor(conn.cursor())
+                        cur = conn.cursor()
                         cur.execute("""
                             INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                             VALUES (%s, %s, %s, %s, %s)
@@ -1921,7 +1762,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
             try:
                 conn = get_db_connection()
                 if conn:
-                    cur = RealDictCursor(conn.cursor())
+                    cur = conn.cursor()
                     cur.execute("""
                         INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                         VALUES (%s, %s, %s, %s, %s)
@@ -1959,7 +1800,7 @@ User Agent: {request.environ.get('HTTP_USER_AGENT', 'Unknown')}
             try:
                 conn = get_db_connection()
                 if conn:
-                    cur = RealDictCursor(conn.cursor())
+                    cur = conn.cursor()
                     cur.execute("""
                         INSERT INTO analytics_events (website_id, event_type, visitor_id, metadata, created_at)
                         VALUES (%s, %s, %s, %s, %s)
@@ -2012,7 +1853,7 @@ def health_check():
             }), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             cur.execute("SELECT 1 as test, version() as db_version")
             result = cur.fetchone()
             cur.close()
@@ -2099,8 +1940,16 @@ def compliance_health_check():
         'active_scans': len(active_scans)
     }), 200
 
-# ===== PHASE 1 ENHANCEMENTS - CLIENT ID GENERATION SYSTEM =====
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
+# ===== PHASE 1 ENHANCEMENTS - ADD THESE TO YOUR MAIN.PY =====
+
+# Add these imports at the top (after existing imports)
+import random
+import string
+
+# ===== CLIENT ID GENERATION SYSTEM =====
 def generate_client_id(user_id):
     """Generate unique client ID for website tracking"""
     timestamp = int(time.time())
@@ -2149,8 +1998,6 @@ def generate_v3_integration_code(client_id, user_config=None):
     {chr(10).join('    ' + attr for attr in data_attrs)}
     async>
 </script>'''
-
-
     
     return integration_code
 
@@ -2167,7 +2014,7 @@ def dashboard_config():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             if request.method == 'GET':
                 # Get user's dashboard configuration
@@ -2271,7 +2118,7 @@ def add_website_enhanced():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Check if domain already exists for this user
             cur.execute("SELECT id FROM websites WHERE user_id = %s AND domain = %s", (user_id, domain))
@@ -2348,7 +2195,7 @@ def track_event_enhanced():
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Find website by client_id
             cur.execute("""
@@ -2452,7 +2299,7 @@ def get_integration_code(website_id):
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Get website and verify ownership
             cur.execute("""
@@ -2490,6 +2337,51 @@ def get_integration_code(website_id):
 # ===== END OF PHASE 1 ENHANCEMENTS =====
 # ===== PHASE 2 ENHANCEMENTS - REAL-TIME METRICS API WITH CACHING =====
 
+# Add these imports at the top (after existing imports)
+from functools import wraps
+from datetime import datetime, timedelta, date
+import json
+from collections import defaultdict
+
+# ===== CACHING SYSTEM =====
+# Initialize Redis for caching (fallback to in-memory if Redis unavailable)
+try:
+    import redis
+    redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'), decode_responses=True)
+    redis_client.ping()
+    CACHE_ENABLED = True
+    logger.info("Redis cache enabled")
+except:
+    CACHE_ENABLED = False
+    cache_store = {}
+    logger.info("Using in-memory cache (Redis unavailable)")
+
+def get_cache(key):
+    """Get value from cache"""
+    if CACHE_ENABLED:
+        try:
+            return redis_client.get(key)
+        except:
+            return None
+    else:
+        return cache_store.get(key)
+
+def set_cache(key, value, ttl=300):
+    """Set value in cache with TTL (default 5 minutes)"""
+    if CACHE_ENABLED:
+        try:
+            redis_client.setex(key, ttl, value)
+        except:
+            pass
+    else:
+        cache_store[key] = value
+        # Simple TTL for in-memory cache
+        threading.Timer(ttl, lambda: cache_store.pop(key, None)).start()
+
+def cache_key(*args):
+    """Generate cache key from arguments"""
+    return ":".join(str(arg) for arg in args)
+
 # ===== REAL-TIME METRICS API ENDPOINTS =====
 
 @app.route('/api/websites/<int:website_id>/metrics', methods=['GET'])
@@ -2506,13 +2398,11 @@ def get_website_metrics(website_id):
             return jsonify(json.loads(cached_data))
         
         conn = get_db_connection()
-
-
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Verify website ownership
             cur.execute("""
@@ -2605,6 +2495,9 @@ def get_website_metrics(website_id):
                 'last_updated': datetime.now().isoformat()
             }
             
+            # Cache for 30 seconds (real-time feel with performance)
+            set_cache(cache_key_str, json.dumps(result), 30)
+            
             return jsonify(result)
             
         except Exception as e:
@@ -2629,12 +2522,18 @@ def get_website_analytics(website_id):
         end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
         granularity = request.args.get('granularity', 'daily')  # daily, hourly, weekly
         
+        # Check cache
+        cache_key_str = cache_key("website_analytics", user_id, website_id, start_date, end_date, granularity)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Verify website ownership
             cur.execute("""
@@ -2727,6 +2626,9 @@ def get_website_analytics(website_id):
                 'last_updated': datetime.now().isoformat()
             }
             
+            # Cache for 5 minutes (historical data changes less frequently)
+            set_cache(cache_key_str, json.dumps(result), 300)
+            
             return jsonify(result)
             
         except Exception as e:
@@ -2746,12 +2648,18 @@ def get_dashboard_summary():
     try:
         user_id = int(get_jwt_identity())
         
+        # Check cache
+        cache_key_str = cache_key("dashboard_summary", user_id)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             
             # Get user's websites
             cur.execute("""
@@ -2850,6 +2758,9 @@ def get_dashboard_summary():
                 'last_updated': datetime.now().isoformat()
             }
             
+            # Cache for 1 minute (dashboard needs frequent updates)
+            set_cache(cache_key_str, json.dumps(result), 60)
+            
             return jsonify(result)
             
         except Exception as e:
@@ -2862,7 +2773,151 @@ def get_dashboard_summary():
         logger.error(f"Dashboard summary error: {e}")
         return jsonify({'error': f'Failed to get dashboard summary: {str(e)}'}), 500
 
+@app.route('/api/websites/list', methods=['GET'])
+@jwt_required()
+def list_user_websites():
+    """Get list of user's websites for selection interface"""
+    try:
+        user_id = int(get_jwt_identity())
+        
+        # Check cache
+        cache_key_str = cache_key("user_websites", user_id)
+        cached_data = get_cache(cache_key_str)
+        if cached_data:
+            return jsonify(json.loads(cached_data))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                SELECT 
+                    id, 
+                    domain, 
+                    status, 
+                    visitors_today, 
+                    consent_rate, 
+                    revenue_today,
+                    client_id,
+                    created_at
+                FROM websites 
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+            """, (user_id,))
+            
+            websites = cur.fetchall()
+            
+            result = {
+                'websites': [
+                    {
+                        'id': site['id'],
+                        'domain': site['domain'],
+                        'status': site['status'],
+                        'visitors_today': site['visitors_today'],
+                        'consent_rate': float(site['consent_rate'] or 0),
+                        'revenue_today': float(site['revenue_today'] or 0),
+                        'client_id': site['client_id'],
+                        'created_at': site['created_at'].isoformat()
+                    } for site in websites
+                ],
+                'total_count': len(websites)
+            }
+            
+            # Cache for 2 minutes
+            set_cache(cache_key_str, json.dumps(result), 120)
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            logger.error(f"List websites error: {e}")
+            return jsonify({'error': f'Failed to list websites: {str(e)}'}), 500
+        finally:
+            conn.close()
+        
+    except Exception as e:
+        logger.error(f"List websites error: {e}")
+        return jsonify({'error': f'Failed to list websites: {str(e)}'}), 500
+
+# ===== CACHE INVALIDATION HELPERS =====
+
+def invalidate_user_cache(user_id):
+    """Invalidate all cache entries for a user"""
+    patterns = [
+        f"dashboard_summary:{user_id}",
+        f"user_websites:{user_id}",
+        f"website_metrics:{user_id}:*",
+        f"website_analytics:{user_id}:*"
+    ]
+    
+    if CACHE_ENABLED:
+        try:
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                if keys:
+                    redis_client.delete(*keys)
+        except:
+            pass
+    else:
+        # Clear in-memory cache
+        keys_to_remove = [k for k in cache_store.keys() if any(p.replace('*', '') in k for p in patterns)]
+        for key in keys_to_remove:
+            cache_store.pop(key, None)
+
+def invalidate_website_cache(user_id, website_id):
+    """Invalidate cache entries for a specific website"""
+    patterns = [
+        f"website_metrics:{user_id}:{website_id}",
+        f"website_analytics:{user_id}:{website_id}:*",
+        f"dashboard_summary:{user_id}",
+        f"user_websites:{user_id}"
+    ]
+    
+    if CACHE_ENABLED:
+        try:
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                if keys:
+                    redis_client.delete(*keys)
+        except:
+            pass
+    else:
+        keys_to_remove = [k for k in cache_store.keys() if any(p.replace('*', '') in k for p in patterns)]
+        for key in keys_to_remove:
+            cache_store.pop(key, None)
+
+# ===== ENHANCED EVENT TRACKING WITH CACHE INVALIDATION =====
+
+# Update the existing track_event function to invalidate cache
+def track_event_with_cache_invalidation():
+    """Enhanced track_event that invalidates relevant cache entries"""
+    # ... existing track_event code ...
+    
+    # After successful event tracking, invalidate cache
+    try:
+        # Find website and user_id from the event
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT w.user_id, w.id as website_id 
+                FROM websites w 
+                WHERE w.client_id = %s
+            """, (client_id,))
+            
+            result = cur.fetchone()
+            if result:
+                invalidate_website_cache(result['user_id'], result['website_id'])
+            
+            conn.close()
+    except Exception as e:
+        logger.error(f"Cache invalidation error: {e}")
+
+# ===== END OF PHASE 2 BACKEND ENHANCEMENTS =====
 # ===== PAYMENT SYSTEM ADDITION (NEW) =====
+# These endpoints are added to the existing working system
 
 def admin_required(f):
     """Decorator to require admin privileges"""
@@ -2875,7 +2930,7 @@ def admin_required(f):
             return jsonify({'error': 'Database connection failed'}), 500
         
         try:
-            cur = RealDictCursor(conn.cursor())
+            cur = conn.cursor()
             cur.execute("SELECT is_admin FROM users WHERE id = %s", (current_user_id,))
             user = cur.fetchone()
             
@@ -2898,7 +2953,7 @@ def get_user_subscription_limits(user_id):
         return None
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         cur.execute("""
             SELECT sp.website_limit, sp.api_call_limit, sp.support_ticket_limit, sp.revenue_share
             FROM users u
@@ -2919,7 +2974,7 @@ def log_admin_activity(admin_user_id, action, target_user_id=None, details=None,
         return
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         ip_address = request_obj.remote_addr if request_obj else None
         user_agent = request_obj.headers.get('User-Agent') if request_obj else None
         
@@ -2943,9 +2998,7 @@ def get_subscription_plans():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-
-
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         cur.execute("""
             SELECT name, monthly_price, website_limit, api_call_limit, 
                    support_ticket_limit, revenue_share, features
@@ -2980,7 +3033,7 @@ def create_subscription():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Get user and plan details
         cur.execute("SELECT * FROM users WHERE id = %s", (current_user_id,))
@@ -3066,7 +3119,7 @@ def change_subscription_plan():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Get user and new plan
         cur.execute("SELECT * FROM users WHERE id = %s", (current_user_id,))
@@ -3139,7 +3192,7 @@ def get_payout_methods():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         cur.execute("""
             SELECT id, provider, account_id, status, is_primary, details, created_at
             FROM payout_methods 
@@ -3174,7 +3227,7 @@ def add_payout_method():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Check if this is the first payout method (make it primary)
         cur.execute("SELECT COUNT(*) as count FROM payout_methods WHERE user_id = %s", (current_user_id,))
@@ -3234,7 +3287,7 @@ def request_payout():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Get user and payout method
         cur.execute("SELECT * FROM users WHERE id = %s", (current_user_id,))
@@ -3309,7 +3362,7 @@ def get_payout_history():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         cur.execute("""
             SELECT p.id, p.amount, p.currency, p.provider, p.status, p.fee_amount, 
                    p.net_amount, p.failure_reason, p.requested_at, p.processed_at, 
@@ -3343,7 +3396,7 @@ def get_admin_dashboard_stats():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Get basic stats
         cur.execute("""
@@ -3389,7 +3442,7 @@ def get_current_usage():
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         # Get current month usage
         current_month = date.today().replace(day=1)
@@ -3447,7 +3500,7 @@ def handle_stripe_webhook():
         return 'Database connection failed', 500
     
     try:
-        cur = RealDictCursor(conn.cursor())
+        cur = conn.cursor()
         
         if event['type'] == 'invoice.payment_succeeded':
             invoice = event['data']['object']
@@ -3501,7 +3554,5 @@ def handle_stripe_webhook():
     
     return 'Success', 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-
 # ===== END OF PAYMENT SYSTEM ADDITION =====
+
