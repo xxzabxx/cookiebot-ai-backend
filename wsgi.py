@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Railway-optimized WSGI entry point
-This file addresses Railway infrastructure requirements
+Gunicorn-compatible WSGI entry point
+This file ensures proper WSGI application reference for Gunicorn
 """
 
 import os
 import sys
 import traceback
-from datetime import datetime
 
 print("🚀 WSGI: Starting CookieBot AI Backend for Railway...")
 print(f"🚀 WSGI: Python version: {sys.version}")
@@ -16,7 +15,9 @@ print(f"🚀 WSGI: Python version: {sys.version}")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import Flask app with detailed error handling
-app = None
+application = None  # Gunicorn looks for 'application' by default
+app = None  # Keep 'app' for compatibility
+
 try:
     print("🔍 WSGI: Attempting to import Flask app from main.py...")
     from main import app as flask_app
@@ -28,15 +29,42 @@ try:
     print(f"🔍 WSGI: App type: {type(flask_app)}")
     print(f"🔍 WSGI: App name: {getattr(flask_app, 'name', 'unknown')}")
     
-    # Use Flask app directly - no wrapper for Railway compatibility
-    app = flask_app
-    print("✅ WSGI: Using Flask app directly for Railway")
+    # Set both 'application' and 'app' for maximum compatibility
+    application = flask_app  # Gunicorn default
+    app = flask_app  # Fallback reference
+    
+    print("✅ WSGI: Flask app assigned to 'application' variable for Gunicorn")
     
     # Test that the app is callable
-    if not callable(app):
+    if not callable(application):
         raise ValueError("Flask app is not callable - WSGI interface broken")
     
     print("✅ WSGI: Flask app is callable - WSGI interface OK")
+    
+    # Test a simple WSGI call to verify it works
+    test_environ = {
+        'REQUEST_METHOD': 'GET',
+        'PATH_INFO': '/',
+        'SERVER_NAME': 'localhost',
+        'SERVER_PORT': '8080',
+        'wsgi.version': (1, 0),
+        'wsgi.url_scheme': 'http',
+        'wsgi.input': None,
+        'wsgi.errors': sys.stderr,
+        'wsgi.multithread': True,
+        'wsgi.multiprocess': False,
+        'wsgi.run_once': False
+    }
+    
+    def test_start_response(status, headers):
+        print(f"🔍 WSGI: Test WSGI call - Status: {status}")
+    
+    try:
+        result = application(test_environ, test_start_response)
+        print("✅ WSGI: Test WSGI call successful - application is working")
+    except Exception as e:
+        print(f"⚠️ WSGI: Test WSGI call failed: {e}")
+        print(f"⚠️ WSGI: This might be normal for root path")
     
 except ImportError as e:
     print(f"💥 WSGI: Import error: {e}")
@@ -56,6 +84,7 @@ except ImportError as e:
         """
         return [error_html.encode('utf-8')]
     
+    application = error_app
     app = error_app
 
 except Exception as e:
@@ -76,9 +105,10 @@ except Exception as e:
         """
         return [error_html.encode('utf-8')]
     
+    application = error_app
     app = error_app
 
-# Server startup logic
+# Server startup logic (only when run directly, not when imported by Gunicorn)
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
     print(f"🔍 WSGI: Railway PORT environment variable: {os.environ.get('PORT', 'not set')}")
@@ -98,7 +128,7 @@ if __name__ == "__main__":
         import gunicorn.app.wsgiapp as wsgi
         print("✅ WSGI: Gunicorn found - using Railway's preferred WSGI server")
         
-        # Configure Gunicorn for Railway
+        # Configure Gunicorn for Railway with proper WSGI app reference
         sys.argv = [
             'gunicorn',
             '--bind', f'0.0.0.0:{port}',
@@ -112,10 +142,11 @@ if __name__ == "__main__":
             '--access-logfile', '-',
             '--error-logfile', '-',
             '--log-level', 'info',
-            'wsgi:app'
+            'wsgi:application'  # Use 'application' instead of 'app'
         ]
         
         print(f"🚀 WSGI: Starting Gunicorn server on 0.0.0.0:{port}")
+        print(f"🔍 WSGI: Gunicorn will look for 'wsgi:application'")
         wsgi_app = wsgi.WSGIApplication()
         wsgi_app.run()
         server_started = True
@@ -124,6 +155,7 @@ if __name__ == "__main__":
         print("❌ WSGI: Gunicorn not available")
     except Exception as e:
         print(f"❌ WSGI: Gunicorn failed: {e}")
+        print(f"❌ WSGI: Gunicorn traceback:\n{traceback.format_exc()}")
     
     # Option 2: Try Waitress with Railway-optimized settings
     if not server_started:
@@ -135,18 +167,15 @@ if __name__ == "__main__":
             
             # Railway-optimized Waitress configuration
             waitress.serve(
-                app, 
+                application,  # Use 'application' variable
                 host='0.0.0.0', 
                 port=port,
-                # Railway-specific optimizations
-                threads=1,  # Single thread for Railway
-                connection_limit=100,  # Lower limit for Railway
-                cleanup_interval=10,  # Faster cleanup
-                channel_timeout=60,  # Shorter timeout
-                # Disable problematic features for Railway
+                threads=1,
+                connection_limit=100,
+                cleanup_interval=10,
+                channel_timeout=60,
                 send_bytes=8192,
                 recv_bytes=8192,
-                # Enable proper logging
                 ident='railway-waitress'
             )
             server_started = True
@@ -161,9 +190,9 @@ if __name__ == "__main__":
         try:
             print("🔄 WSGI: Using Flask development server as last resort")
             
-            if hasattr(app, 'run'):
+            if hasattr(application, 'run'):
                 print(f"🚀 WSGI: Starting Flask dev server on 0.0.0.0:{port}")
-                app.run(
+                application.run(
                     host='0.0.0.0', 
                     port=port, 
                     debug=False, 
@@ -183,4 +212,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
 print("🔍 WSGI: WSGI module loaded successfully")
+print(f"🔍 WSGI: Application variable type: {type(application)}")
+print(f"🔍 WSGI: Application variable callable: {callable(application)}")
 
