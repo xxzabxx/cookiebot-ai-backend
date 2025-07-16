@@ -3556,31 +3556,45 @@ def handle_stripe_webhook():
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
+ Add this to the very end of your main.py file
+# Replace everything after "# ===== END OF PAYMENT SYSTEM ADDITION ====="
 
-# ===== SIMPLE RAILWAY FIX =====
+# ===== DIAGNOSTIC RAILWAY FIX =====
 import os
+import sys
+
+print("🔍 DIAGNOSTIC: Starting server initialization...")
+print(f"🔍 DIAGNOSTIC: Python version: {sys.version}")
+print(f"🔍 DIAGNOSTIC: Current working directory: {os.getcwd()}")
 
 # Health check routes
 @app.route('/health')
 def health():
-    return {'status': 'ok'}, 200
+    return {'status': 'ok', 'server': 'diagnostic'}, 200
 
 @app.route('/')
 def home():
-    return {'message': 'CookieBot AI Backend', 'status': 'running'}, 200
+    return {'message': 'CookieBot AI Backend - Diagnostic Mode', 'status': 'running'}, 200
 
-# Start server
+# Start server with detailed logging
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    print(f"🔍 DIAGNOSTIC: Attempting to start server on port {port}")
     
-    # Force Waitress import and usage
+    # Check if waitress is available
     try:
-        from waitress import serve
-        print(f"✅ Starting Waitress server on port {port}")
-        serve(app, host='0.0.0.0', port=port, threads=4)
-    except ImportError:
-        print("❌ Waitress not found, using Flask dev server")
+        import waitress
+        print(f"✅ DIAGNOSTIC: Waitress found! Version: {waitress.__version__}")
+        
+        print(f"🚀 DIAGNOSTIC: Starting Waitress server on 0.0.0.0:{port}")
+        waitress.serve(app, host='0.0.0.0', port=port, threads=4)
+        
+    except ImportError as e:
+        print(f"❌ DIAGNOSTIC: Waitress import failed: {e}")
+        print("🔄 DIAGNOSTIC: Falling back to Flask development server")
         app.run(host='0.0.0.0', port=port, debug=False)
+        
     except Exception as e:
-        print(f"❌ Server error: {e}")
+        print(f"💥 DIAGNOSTIC: Unexpected error: {e}")
+        print("🔄 DIAGNOSTIC: Using basic Flask server as last resort")
         app.run(host='0.0.0.0', port=port, debug=False)
