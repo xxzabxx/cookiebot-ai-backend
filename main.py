@@ -41,14 +41,9 @@ jwt = JWTManager(app)
 # Initialize Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# CORS Configuration - Updated for Railway deployment
+# CORS Configuration - Fixed for Vercel deployment
 CORS(app, 
-     origins=[
-         'https://cookiebot.ai', 
-         'https://www.cookiebot.ai', 
-         'https://cookiebotai.netlify.app',  # Netlify domain
-         'http://localhost:3000'
-     ],
+     origins=['https://cookiebot.ai', 'https://www.cookiebot.ai', 'http://localhost:3000'],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
      supports_credentials=True)
@@ -3562,14 +3557,13 @@ def handle_stripe_webhook():
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
 
-
 # ===== HEALTH CHECK AND STARTUP ROUTES =====
 
 # Simple health check for Railway
 @app.route('/health', methods=['GET'])
 def simple_health():
     """Simple health check endpoint for Railway"""
-    return jsonify({'status': 'healthy'}), 200
+    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}), 200
 
 # Root route for basic connectivity
 @app.route('/', methods=['GET'])
@@ -3656,26 +3650,25 @@ def initialize_app():
     except Exception as e:
         logger.error(f"Error during app initialization: {e}")
 
-# Start the Flask application
+# Start the Flask application with improved error handling
 if __name__ == '__main__':
     # Initialize the application
     initialize_app()
     
+    # Get port from environment
+    port = int(os.environ.get('PORT', 8080))
+    
     try:
-        # Try to use Waitress production server
+        # Try to import and use Waitress production server
         from waitress import serve
-        port = int(os.environ.get('PORT', 8080))
         logger.info(f"Starting production server (Waitress) on 0.0.0.0:{port}")
-        serve(app, host='0.0.0.0', port=port, threads=6)
-    except ImportError:
-        # Fallback to Flask development server
-        port = int(os.environ.get('PORT', 8080))
-        logger.info(f"Waitress not available, starting Flask development server on 0.0.0.0:{port}")
+        serve(app, host='0.0.0.0', port=port, threads=6, connection_limit=1000)
+    except ImportError as e:
+        logger.error(f"Waitress import failed: {e}")
+        logger.info(f"Falling back to Flask development server on 0.0.0.0:{port}")
         app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
     except Exception as e:
-        logger.error(f"Failed to start server: {e}")
-        # Last resort - basic Flask server
-        port = int(os.environ.get('PORT', 8080))
+        logger.error(f"Failed to start Waitress server: {e}")
         logger.info(f"Starting basic Flask server on 0.0.0.0:{port}")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
