@@ -3556,45 +3556,53 @@ def handle_stripe_webhook():
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
-
-# Replace everything after "# ===== END OF PAYMENT SYSTEM ADDITION ====="
-
-# ===== DIAGNOSTIC RAILWAY FIX =====
+# ===== FINAL RAILWAY SOLUTION =====
 import os
 import sys
 
-print("🔍 DIAGNOSTIC: Starting server initialization...")
-print(f"🔍 DIAGNOSTIC: Python version: {sys.version}")
-print(f"🔍 DIAGNOSTIC: Current working directory: {os.getcwd()}")
+print("🔍 FINAL: Starting server initialization...")
+print(f"🔍 FINAL: Python version: {sys.version}")
 
 # Health check routes
 @app.route('/health')
 def health():
-    return {'status': 'ok', 'server': 'diagnostic'}, 200
+    return {'status': 'ok', 'server': 'final_fix'}, 200
 
 @app.route('/')
 def home():
-    return {'message': 'CookieBot AI Backend - Diagnostic Mode', 'status': 'running'}, 200
+    return {'message': 'CookieBot AI Backend - Final Fix', 'status': 'running'}, 200
 
-# Start server with detailed logging
+# Start server - try multiple approaches
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    print(f"🔍 DIAGNOSTIC: Attempting to start server on port {port}")
+    print(f"🔍 FINAL: Attempting to start server on port {port}")
     
-    # Check if waitress is available
+    # Method 1: Try Waitress
+    waitress_success = False
     try:
         import waitress
-        print(f"✅ DIAGNOSTIC: Waitress found! Version: {waitress.__version__}")
-        
-        print(f"🚀 DIAGNOSTIC: Starting Waitress server on 0.0.0.0:{port}")
-        waitress.serve(app, host='0.0.0.0', port=port, threads=4)
+        print(f"✅ FINAL: Waitress found! Version: {waitress.__version__}")
+        print(f"🚀 FINAL: Starting Waitress server on 0.0.0.0:{port}")
+        waitress.serve(app, host='0.0.0.0', port=port, threads=4, connection_limit=1000)
+        waitress_success = True
         
     except ImportError as e:
-        print(f"❌ DIAGNOSTIC: Waitress import failed: {e}")
-        print("🔄 DIAGNOSTIC: Falling back to Flask development server")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        print(f"❌ FINAL: Waitress import failed: {e}")
         
     except Exception as e:
-        print(f"💥 DIAGNOSTIC: Unexpected error: {e}")
-        print("🔄 DIAGNOSTIC: Using basic Flask server as last resort")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        print(f"💥 FINAL: Waitress error: {e}")
+    
+    # Method 2: Try Gunicorn (alternative production server)
+    if not waitress_success:
+        try:
+            import gunicorn
+            print(f"✅ FINAL: Trying Gunicorn as alternative...")
+            # Note: This would require gunicorn in requirements.txt
+            
+        except ImportError:
+            print(f"❌ FINAL: Gunicorn not available")
+    
+    # Method 3: Enhanced Flask server (last resort)
+    if not waitress_success:
+        print("🔄 FINAL: Using enhanced Flask server")
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
