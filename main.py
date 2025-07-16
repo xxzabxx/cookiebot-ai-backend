@@ -41,12 +41,17 @@ jwt = JWTManager(app)
 # Initialize Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# CORS Configuration - Fixed for Vercel deployment
+# Configuration - Updated for Railway deployment
 CORS(app, 
-     origins=['https://cookiebot.ai', 'https://www.cookiebot.ai', 'http://localhost:3000'],
+     origins=[
+         'https://cookiebot.ai', 
+         'https://www.cookiebot.ai', 
+         'https://cookiebotai.netlify.app',  # ← This is your Netlify domain
+         'http://localhost:3000'
+     ],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
-     supports_credentials=True)
+     supports_credentials=True )
 
 # Global storage for active scans
 active_scans = {}
