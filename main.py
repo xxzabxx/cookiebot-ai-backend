@@ -41,17 +41,17 @@ jwt = JWTManager(app)
 # Initialize Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY')
 
-# Configuration - Updated for Railway deployment
+# CORS Configuration - Updated for Railway deployment
 CORS(app, 
      origins=[
          'https://cookiebot.ai', 
          'https://www.cookiebot.ai', 
-         'https://cookiebotai.netlify.app',  # ← This is your Netlify domain
+         'https://cookiebotai.netlify.app',  # Netlify domain
          'http://localhost:3000'
      ],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
-     supports_credentials=True )
+     supports_credentials=True)
 
 # Global storage for active scans
 active_scans = {}
@@ -1946,7 +1946,7 @@ def compliance_health_check():
     }), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
 # ===== PHASE 1 ENHANCEMENTS - ADD THESE TO YOUR MAIN.PY =====
 
@@ -3560,4 +3560,122 @@ def handle_stripe_webhook():
     return 'Success', 200
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
+
+
+
+# ===== HEALTH CHECK AND STARTUP ROUTES =====
+
+# Simple health check for Railway
+@app.route('/health', methods=['GET'])
+def simple_health():
+    """Simple health check endpoint for Railway"""
+    return jsonify({'status': 'healthy'}), 200
+
+# Root route for basic connectivity
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint to verify server is running"""
+    return jsonify({
+        'message': 'CookieBot AI Backend is running',
+        'status': 'active',
+        'timestamp': datetime.utcnow().isoformat()
+    }), 200
+
+# Detailed health check endpoint
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Detailed health check with database connectivity"""
+    try:
+        # Test database connection
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({
+                'status': 'unhealthy',
+                'database': 'disconnected',
+                'timestamp': datetime.utcnow().isoformat()
+            }), 500
+        
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 as test, version() as db_version")
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            
+            return jsonify({
+                'status': 'healthy',
+                'timestamp': datetime.utcnow().isoformat(),
+                'database': 'connected',
+                'database_version': result['db_version'][:100] if result else 'unknown',
+                'environment_vars': {
+                    'DATABASE_URL': bool(os.environ.get('DATABASE_URL')),
+                    'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
+                    'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
+                },
+                'active_scans': len(active_scans),
+                'static_file_serving': 'enabled'
+            }), 200
+            
+        except Exception as e:
+            conn.close()
+            logger.error(f"Health check database error: {e}")
+            return jsonify({
+                'status': 'unhealthy',
+                'timestamp': datetime.utcnow().isoformat(),
+                'database': 'disconnected',
+                'error': str(e)
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return jsonify({
+            'status': 'unhealthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'error': str(e)
+        }), 500
+
+# Compliance health check endpoint
+@app.route('/api/compliance/health', methods=['GET'])
+def compliance_health_check():
+    """Health check endpoint for compliance scanner"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'compliance-scanner',
+        'timestamp': datetime.utcnow().isoformat(),
+        'active_scans': len(active_scans)
+    }), 200
+
+# Initialize database on startup
+def initialize_app():
+    """Initialize the application and database"""
+    try:
+        if init_database():
+            logger.info("Database tables initialized successfully")
+        else:
+            logger.error("Failed to initialize database tables")
+    except Exception as e:
+        logger.error(f"Error during app initialization: {e}")
+
+# Start the Flask application
+if __name__ == '__main__':
+    # Initialize the application
+    initialize_app()
+    
+    try:
+        # Try to use Waitress production server
+        from waitress import serve
+        port = int(os.environ.get('PORT', 8080))
+        logger.info(f"Starting production server (Waitress) on 0.0.0.0:{port}")
+        serve(app, host='0.0.0.0', port=port, threads=6)
+    except ImportError:
+        # Fallback to Flask development server
+        port = int(os.environ.get('PORT', 8080))
+        logger.info(f"Waitress not available, starting Flask development server on 0.0.0.0:{port}")
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        # Last resort - basic Flask server
+        port = int(os.environ.get('PORT', 8080))
+        logger.info(f"Starting basic Flask server on 0.0.0.0:{port}")
+        app.run(host='0.0.0.0', port=port, debug=False)
 
