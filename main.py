@@ -3625,54 +3625,24 @@ def api_health_check():
         "timestamp": datetime.now().isoformat()
     })
 
-
 # ===== FINAL RAILWAY SOLUTION =====
-import os
-import sys
-
-print("🔍 FINAL: Starting server initialization...")
-print(f"🔍 FINAL: Python version: {sys.version}")
-
-# Health check routes
-@app.route('/health')
-def health():
-    return {'status': 'ok', 'server': 'final_fix'}, 200
-
-@app.route('/')
-def home():
-    return {'message': 'CookieBot AI Backend - Final Fix', 'status': 'running'}, 200
-
-# Start server - try multiple approaches
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
-    print(f"🔍 FINAL: Attempting to start server on port {port}")
+    print(f"🚀 FINAL: Attempting to start server on port {port}")
     
-    # Method 1: Try Waitress
-    waitress_success = False
+    # Try Waitress first (production WSGI server)
     try:
         import waitress
-        print(f"✅ FINAL: Waitress found! Version: {waitress.__version__}")
+        print(f"✅ FINAL: Waitress found and imported successfully!")
         print(f"🚀 FINAL: Starting Waitress server on 0.0.0.0:{port}")
         waitress.serve(app, host='0.0.0.0', port=port, threads=4, connection_limit=1000)
-        waitress_success = True
         
     except ImportError as e:
         print(f"❌ FINAL: Waitress import failed: {e}")
+        print("🔄 FINAL: Using Flask development server as last resort")
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
         
     except Exception as e:
         print(f"💥 FINAL: Waitress error: {e}")
-    
-    # Method 2: Try Gunicorn (alternative production server)
-    if not waitress_success:
-        try:
-            import gunicorn
-            print(f"✅ FINAL: Trying Gunicorn as alternative...")
-            # Note: This would require gunicorn in requirements.txt
-            
-        except ImportError:
-            print(f"❌ FINAL: Gunicorn not available")
-    
-    # Method 3: Enhanced Flask server (last resort)
-    if not waitress_success:
-        print("🔄 FINAL: Using enhanced Flask server")
+        print("🔄 FINAL: Using Flask development server as last resort")
         app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
