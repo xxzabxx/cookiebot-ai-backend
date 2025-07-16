@@ -24,7 +24,7 @@ if __name__ == "__main__":
     # Try Waitress first (production WSGI server)
     try:
         import waitress
-        print(f"✅ WSGI: Waitress found! Version: {waitress.__version__}")
+        print(f"✅ WSGI: Waitress found and imported successfully!")
         print(f"🚀 WSGI: Starting Waitress server on 0.0.0.0:{port}")
         waitress.serve(app, host='0.0.0.0', port=port, threads=4, connection_limit=1000)
         
@@ -43,7 +43,7 @@ if __name__ == "__main__":
             app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
             
     except Exception as e:
-        print(f"💥 WSGI: Unexpected error: {e}")
+        print(f"💥 WSGI: Waitress error: {e}")
         print("🔄 WSGI: Using Flask development server as last resort")
         app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
