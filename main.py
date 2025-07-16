@@ -3557,118 +3557,30 @@ def handle_stripe_webhook():
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
 
-# ===== HEALTH CHECK AND STARTUP ROUTES =====
+# ===== SIMPLE RAILWAY FIX =====
+import os
 
-# Simple health check for Railway
-@app.route('/health', methods=['GET'])
-def simple_health():
-    """Simple health check endpoint for Railway"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}), 200
+# Health check routes
+@app.route('/health')
+def health():
+    return {'status': 'ok'}, 200
 
-# Root route for basic connectivity
-@app.route('/', methods=['GET'])
-def root():
-    """Root endpoint to verify server is running"""
-    return jsonify({
-        'message': 'CookieBot AI Backend is running',
-        'status': 'active',
-        'timestamp': datetime.utcnow().isoformat()
-    }), 200
+@app.route('/')
+def home():
+    return {'message': 'CookieBot AI Backend', 'status': 'running'}, 200
 
-# Detailed health check endpoint
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Detailed health check with database connectivity"""
-    try:
-        # Test database connection
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({
-                'status': 'unhealthy',
-                'database': 'disconnected',
-                'timestamp': datetime.utcnow().isoformat()
-            }), 500
-        
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT 1 as test, version() as db_version")
-            result = cur.fetchone()
-            cur.close()
-            conn.close()
-            
-            return jsonify({
-                'status': 'healthy',
-                'timestamp': datetime.utcnow().isoformat(),
-                'database': 'connected',
-                'database_version': result['db_version'][:100] if result else 'unknown',
-                'environment_vars': {
-                    'DATABASE_URL': bool(os.environ.get('DATABASE_URL')),
-                    'JWT_SECRET_KEY': bool(os.environ.get('JWT_SECRET_KEY')),
-                    'SUPABASE_URL': bool(os.environ.get('SUPABASE_URL'))
-                },
-                'active_scans': len(active_scans),
-                'static_file_serving': 'enabled'
-            }), 200
-            
-        except Exception as e:
-            conn.close()
-            logger.error(f"Health check database error: {e}")
-            return jsonify({
-                'status': 'unhealthy',
-                'timestamp': datetime.utcnow().isoformat(),
-                'database': 'disconnected',
-                'error': str(e)
-            }), 500
-        
-    except Exception as e:
-        logger.error(f"Health check error: {e}")
-        return jsonify({
-            'status': 'unhealthy',
-            'timestamp': datetime.utcnow().isoformat(),
-            'error': str(e)
-        }), 500
-
-# Compliance health check endpoint
-@app.route('/api/compliance/health', methods=['GET'])
-def compliance_health_check():
-    """Health check endpoint for compliance scanner"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'compliance-scanner',
-        'timestamp': datetime.utcnow().isoformat(),
-        'active_scans': len(active_scans)
-    }), 200
-
-# Initialize database on startup
-def initialize_app():
-    """Initialize the application and database"""
-    try:
-        if init_database():
-            logger.info("Database tables initialized successfully")
-        else:
-            logger.error("Failed to initialize database tables")
-    except Exception as e:
-        logger.error(f"Error during app initialization: {e}")
-
-# Start the Flask application with improved error handling
+# Start server
 if __name__ == '__main__':
-    # Initialize the application
-    initialize_app()
-    
-    # Get port from environment
     port = int(os.environ.get('PORT', 8080))
     
+    # Force Waitress import and usage
     try:
-        # Try to import and use Waitress production server
         from waitress import serve
-        logger.info(f"Starting production server (Waitress) on 0.0.0.0:{port}")
-        serve(app, host='0.0.0.0', port=port, threads=6, connection_limit=1000)
-    except ImportError as e:
-        logger.error(f"Waitress import failed: {e}")
-        logger.info(f"Falling back to Flask development server on 0.0.0.0:{port}")
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        print(f"✅ Starting Waitress server on port {port}")
+        serve(app, host='0.0.0.0', port=port, threads=4)
+    except ImportError:
+        print("❌ Waitress not found, using Flask dev server")
+        app.run(host='0.0.0.0', port=port, debug=False)
     except Exception as e:
-        logger.error(f"Failed to start Waitress server: {e}")
-        logger.info(f"Starting basic Flask server on 0.0.0.0:{port}")
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-
+        print(f"❌ Server error: {e}")
+        app.run(host='0.0.0.0', port=port, debug=False)
