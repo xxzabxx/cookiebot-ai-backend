@@ -3556,7 +3556,7 @@ def handle_stripe_webhook():
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
- Add these routes to your main.py file (before the wsgi startup code)
+ #Add these routes to your main.py file (before the wsgi startup code)
 
 # ===== HEALTH CHECK ROUTES =====
 @app.route('/')
