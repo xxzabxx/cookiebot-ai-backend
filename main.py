@@ -3556,7 +3556,7 @@ def handle_stripe_webhook():
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
- Add this to the very end of your main.py file
+
 # Replace everything after "# ===== END OF PAYMENT SYSTEM ADDITION ====="
 
 # ===== DIAGNOSTIC RAILWAY FIX =====
