@@ -3556,6 +3556,53 @@ def handle_stripe_webhook():
 
 # ===== END OF PAYMENT SYSTEM ADDITION =====
 
+ Add these routes to your main.py file (before the wsgi startup code)
+
+# ===== HEALTH CHECK ROUTES =====
+@app.route('/')
+def root():
+    """Root endpoint for basic connectivity"""
+    return jsonify({
+        "status": "success",
+        "message": "CookieBot AI Backend is running",
+        "server": "Waitress Production Server",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/health')
+def health_check():
+    """Simple health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "message": "Service is operational",
+        "server": "Waitress Production Server",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/api/health')
+def api_health_check():
+    """Detailed health check with database status"""
+    try:
+        # Test database connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        cursor.close()
+        conn.close()
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return jsonify({
+        "status": "healthy",
+        "message": "API service is operational",
+        "database": db_status,
+        "server": "Waitress Production Server",
+        "timestamp": datetime.now().isoformat()
+    })
+
+
 # ===== FINAL RAILWAY SOLUTION =====
 import os
 import sys
