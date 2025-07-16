@@ -30,6 +30,66 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Add this code right after the Flask app creation (around line 31)
+# This will catch and log any runtime errors
+
+import traceback
+from functools import wraps
+
+# Enhanced error logging
+def log_errors(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        try:
+            print(f"🔍 ROUTE: Executing {f.__name__}")
+            result = f(*args, **kwargs)
+            print(f"✅ ROUTE: {f.__name__} completed successfully")
+            return result
+        except Exception as e:
+            print(f"💥 ROUTE ERROR in {f.__name__}: {str(e)}")
+            print(f"💥 TRACEBACK: {traceback.format_exc()}")
+            return jsonify({
+                'error': 'Internal server error',
+                'message': str(e),
+                'route': f.__name__
+            }), 500
+    return decorated_function
+
+# Global error handler
+@app.errorhandler(500)
+def internal_error(error):
+    print(f"💥 GLOBAL ERROR: {str(error)}")
+    print(f"💥 GLOBAL TRACEBACK: {traceback.format_exc()}")
+    return jsonify({
+        'error': 'Internal server error',
+        'message': 'An unexpected error occurred',
+        'details': str(error)
+    }), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"💥 UNHANDLED EXCEPTION: {str(e)}")
+    print(f"💥 EXCEPTION TRACEBACK: {traceback.format_exc()}")
+    return jsonify({
+        'error': 'Unhandled exception',
+        'message': str(e),
+        'type': type(e).__name__
+    }), 500
+
+# Test the root route with error logging
+@app.route('/debug/test', methods=['GET'])
+@log_errors
+def debug_test():
+    """Simple test route to verify error logging works"""
+    return jsonify({
+        'status': 'success',
+        'message': 'Debug test route working',
+        'timestamp': datetime.now().isoformat()
+    })
+
+print("🔍 ERROR LOGGING: Error handlers and logging decorators added")
+
+
 # Configuration
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-jwt-secret-change-in-production')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
