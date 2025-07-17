@@ -53,10 +53,6 @@ FROM base as development
 # Set development environment
 ENV FLASK_ENV=development
 
-# Install development dependencies
-COPY requirements-dev.txt .
-RUN pip install --no-cache-dir -r requirements-dev.txt
-
 # Run development server
 CMD ["python", "app.py"]
 
