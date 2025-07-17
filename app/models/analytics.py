@@ -32,7 +32,7 @@ class AnalyticsEvent(db.Model):
     revenue_generated = Column(DECIMAL(10, 2), default=0.00)
     
     # Additional data
-    metadata = Column(JSONB, default=dict)
+    event_metadata = Column(JSONB, default=dict)
     
     # Timestamp
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
