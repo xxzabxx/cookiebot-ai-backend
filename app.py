@@ -15,10 +15,6 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', 5000)),
         debug=os.getenv('FLASK_ENV') == 'development'
     )
-<<<<<<< HEAD
-
-print(f"PORT environment variable: {os.getenv(\"PORT\", \"NOT SET\")}")
-=======
 else:
     # For production WSGI servers
     app.run(
@@ -26,4 +22,3 @@ else:
         port=int(os.getenv('PORT', 5000)),
         debug=False
     )
->>>>>>> 032be8327014a9589492abc140beca32d40fcab9
