@@ -374,3 +374,13 @@ def validate_subscription_access(required_tier: str = 'free'):
         return decorated_function
     return decorator
 
+
+def handle_api_error(error, message="An error occurred"):
+    """Handle API errors with proper logging and response"""
+    import logging
+    from flask import jsonify
+    
+    logger = logging.getLogger(__name__)
+    logger.error(f"{message}: {str(error)}")
+    
+    return jsonify({'error': message}), 500
