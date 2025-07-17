@@ -15,7 +15,7 @@ isort>=5.12.0
 mypy>=1.5.0
 
 # Development tools
-flask-shell-ipython>=1.4.0
+flask-shell-ipython>=0.5.3
 ipython>=8.14.0
 ipdb>=0.13.13
 
