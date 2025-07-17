@@ -16,3 +16,4 @@ if __name__ == '__main__':
         debug=os.getenv('FLASK_ENV') == 'development'
     )
 
+print(f"PORT environment variable: {os.getenv(\"PORT\", \"NOT SET\")}")
