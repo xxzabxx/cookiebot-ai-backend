@@ -347,3 +347,8 @@ def init_database():
     except Exception as e:
         print(f"❌ Supabase connection failed: {e}")
         return False
+
+def get_db_connection():
+    import os
+    import psycopg2
+    return psycopg2.connect(os.getenv('DATABASE_URL'))

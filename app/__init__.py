@@ -92,7 +92,7 @@ def init_database_tables(app: Flask) -> None:
                 
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.error("Database initialization failed", error=str(e))
+        logger.error(f"Database initialization failed: {str(e)}")
         raise
 
 
