@@ -471,3 +471,9 @@ def validate_file_upload(allowed_extensions: set, max_size: int = 5 * 1024 * 102
         return decorated_function
     return decorator
 
+
+def validate_url(url):
+    """Validate URL format"""
+    import re
+    pattern = r'^https?://(?:[-\w.] )+(?:\:[0-9]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:\#(?:[\w.])*)?)?$'
+    return bool(re.match(pattern, url))
