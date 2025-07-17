@@ -135,3 +135,12 @@ def log_performance_metric(metric_name: str, value: float, unit: str = 'ms') -> 
         unit=unit
     )
 
+
+def setup_logging():
+    """Setup basic logging configuration"""
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    return logging.getLogger(__name__)
