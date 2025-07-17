@@ -311,3 +311,21 @@ def get_user_by_email(email: str):
         logger.error("Failed to get user by email", email=email, error=str(e))
         return None
 
+
+def init_database():
+    """Initialize database connection and tables"""
+    try:
+        import os
+        import psycopg2
+        
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            raise Exception("DATABASE_URL not found in environment variables")
+            
+        conn = psycopg2.connect(database_url)
+        conn.close()
+        print("✅ Supabase database connection successful")
+        return True
+    except Exception as e:
+        print(f"❌ Supabase connection failed: {e}")
+        return False
