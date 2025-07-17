@@ -352,3 +352,8 @@ def get_db_connection():
     import os
     import psycopg2
     return psycopg2.connect(os.getenv('DATABASE_URL'))
+
+def get_db_connection():
+    import os
+    import psycopg2
+    return psycopg2.connect(os.getenv('DATABASE_URL'))
