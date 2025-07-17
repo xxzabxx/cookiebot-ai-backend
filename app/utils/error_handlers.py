@@ -384,3 +384,13 @@ def handle_api_error(error, message="An error occurred"):
     logger.error(f"{message}: {str(error)}")
     
     return jsonify({'error': message}), 500
+
+def handle_api_error(error, message="An error occurred"):
+    """Handle API errors with proper logging and response"""
+    import logging
+    from flask import jsonify
+    
+    logger = logging.getLogger(__name__)
+    logger.error(f"{message}: {str(error)}")
+    
+    return jsonify({'error': message}), 500
