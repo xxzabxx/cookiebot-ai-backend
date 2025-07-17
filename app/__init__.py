@@ -60,10 +60,11 @@ def init_extensions(app: Flask) -> None:
     
     # Rate Limiter
     limiter = Limiter(
-        app,
-        key_func=get_remote_address,
-        default_limits=["1000 per hour", "100 per minute"]
-    )
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["1000 per hour"]
+)
+
     
     # Store extensions in app for access
     app.jwt = jwt
