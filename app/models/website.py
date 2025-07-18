@@ -41,7 +41,6 @@ class Website(db.Model):
     # Relationships
     user = relationship("User", back_populates="websites")
     analytics_events = relationship("AnalyticsEvent", back_populates="website", cascade="all, delete-orphan")
-    compliance_scans = relationship("ComplianceScan", back_populates="website", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f'<Website {self.domain}>'
