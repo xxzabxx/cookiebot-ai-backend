@@ -55,6 +55,10 @@ def create_app(config_name: str = None) -> Flask:
 def init_extensions(app: Flask) -> None:
     """Initialize Flask extensions."""
     
+    # Initialize SQLAlchemy with app
+    from .utils.database import db
+    db.init_app(app)
+    
     # JWT Manager
     jwt = JWTManager(app)
     
