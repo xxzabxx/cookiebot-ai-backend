@@ -25,8 +25,22 @@ class BaseSchema(Schema):
 
 
 class EmailField(fields.Email):
-    """Simple email field that works."""
-    pass
+    """Enhanced email field with additional validation."""
+    
+    def _validate(self, value, attr, data, **kwargs):
+        super()._validate(value, attr, data, **kwargs)
+        
+        # Additional email validation
+        if value:
+            # Check for common disposable email domains
+            disposable_domains = [
+                '10minutemail.com', 'tempmail.org', 'guerrillamail.com',
+                'mailinator.com', 'throwaway.email'
+            ]
+            
+            domain = value.split('@')[1].lower()
+            if domain in disposable_domains:
+                raise ValidationError("Disposable email addresses are not allowed")
 
 
 class PasswordField(fields.String):
