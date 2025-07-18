@@ -17,7 +17,7 @@ import structlog
 from app.models.user import User
 from app.utils.database import db
 from app.utils.error_handlers import APIResponse, APIException, ErrorCodes, log_security_event
-from app.utils.validators import (
+from app.utils.validators_debug import (
     validate_json, UserRegistrationSchema, UserLoginSchema,
     PasswordResetRequestSchema, PasswordResetSchema
 )
