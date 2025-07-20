@@ -4,7 +4,7 @@ Application factory for CookieBot.ai application.
 
 import os
 import logging
-from flask import Flask, send_from_directory, jsonify
+from flask import Flask
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_limiter import Limiter
@@ -23,7 +23,8 @@ def create_app(config_name: str = None) -> Flask:
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    app = Flask(__name__)
+    # ONLY CHANGE: Add static folder configuration to Flask app
+    app = Flask(__name__, static_folder='../static', static_url_path='/static')
     
     # Load configuration
     config_name = config_name or os.environ.get('FLASK_ENV', 'development')
@@ -40,9 +41,6 @@ def create_app(config_name: str = None) -> Flask:
     
     # Register blueprints
     register_blueprints(app)
-    
-    # Register static file serving route
-    register_static_routes(app)
     
     # Register error handlers
     register_error_handlers(app)
@@ -130,99 +128,6 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(billing_bp, url_prefix='/api/billing')
 
 
-def register_static_routes(app: Flask) -> None:
-    """Register static file serving routes for V3 script and other assets."""
-    
-    @app.route('/static/<path:filename>')
-    @app.route('/static/<path:filename>/')
-    def serve_static(filename):
-        """Serve static files including the V3 cookie script - DIAGNOSTIC VERSION."""
-        try:
-            # DIAGNOSTIC: Log detailed path information
-            app.logger.info(f"=== STATIC FILE DIAGNOSTIC ===")
-            app.logger.info(f"Requested file: {filename}")
-            app.logger.info(f"Current working directory: {os.getcwd()}")
-            app.logger.info(f"__file__ location: {__file__}")
-            app.logger.info(f"App root path: {app.root_path}")
-            
-            # Test multiple possible static directory locations
-            possible_static_dirs = [
-                os.path.join(os.getcwd(), 'static'),  # Current working directory
-                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static'),  # Relative to app
-                os.path.join(app.root_path, 'static'),  # Relative to Flask app root
-                '/app/static',  # Absolute path for Railway
-                'static',  # Simple relative path
-                '/static',  # Root static
-                os.path.join(os.path.dirname(__file__), '..', 'static'),  # Another relative attempt
-            ]
-            
-            app.logger.info(f"Testing {len(possible_static_dirs)} possible static directories:")
-            
-            for i, static_dir in enumerate(possible_static_dirs):
-                app.logger.info(f"  {i+1}. Testing: {static_dir}")
-                app.logger.info(f"     Exists: {os.path.exists(static_dir)}")
-                
-                if os.path.exists(static_dir):
-                    # List contents of the directory
-                    try:
-                        contents = os.listdir(static_dir)
-                        app.logger.info(f"     Contents: {contents}")
-                        
-                        # Check if our specific file exists
-                        file_path = os.path.join(static_dir, filename)
-                        file_exists = os.path.exists(file_path)
-                        app.logger.info(f"     File '{filename}' exists: {file_exists}")
-                        
-                        if file_exists:
-                            app.logger.info(f"SUCCESS: Found file at {file_path}")
-                            
-                            # Serve the file with proper CORS headers
-                            response = send_from_directory(static_dir, filename)
-                            
-                            # Add CORS headers for script files
-                            if filename.endswith('.js'):
-                                response.headers['Access-Control-Allow-Origin'] = '*'
-                                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-                                response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-                                response.headers['Content-Type'] = 'application/javascript'
-                            
-                            return response
-                            
-                    except Exception as e:
-                        app.logger.error(f"     Error listing directory: {str(e)}")
-                else:
-                    app.logger.info(f"     Directory does not exist")
-            
-            # If we get here, file was not found in any directory
-            app.logger.error(f"FAILED: File '{filename}' not found in any static directory")
-            
-            # Return detailed diagnostic information
-            return jsonify({
-                "error": {
-                    "code": "STATIC_DIAGNOSTIC",
-                    "message": f"Static file '{filename}' not found",
-                    "diagnostic": {
-                        "requested_file": filename,
-                        "current_working_directory": os.getcwd(),
-                        "app_root_path": app.root_path,
-                        "tested_directories": possible_static_dirs,
-                        "existing_directories": [d for d in possible_static_dirs if os.path.exists(d)]
-                    }
-                },
-                "success": False
-            }), 404
-            
-        except Exception as e:
-            app.logger.error(f"EXCEPTION in static file serving: {str(e)}")
-            return jsonify({
-                "error": {
-                    "code": "STATIC_ERROR", 
-                    "message": f"Internal server error while serving static file: {str(e)}"
-                },
-                "success": False
-            }), 500
-
-
 def configure_cors(app: Flask) -> None:
     """Configure CORS with secure defaults."""
     origins = app.config.get('CORS_ORIGINS', [])
@@ -233,7 +138,6 @@ def configure_cors(app: Flask) -> None:
     if not origins:
         # Default origins for development
         origins = [
-            "https://cookiebotai.netlify.app",
             'http://localhost:3000',
             'http://localhost:3001',
             'https://cookiebot.ai',
