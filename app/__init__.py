@@ -137,6 +137,7 @@ def configure_cors(app: Flask) -> None:
     if not origins:
         # Default origins for development
         origins = [
+            "https://cookiebotai.netlify.app",
             'http://localhost:3000',
             'http://localhost:3001',
             'https://cookiebot.ai',
