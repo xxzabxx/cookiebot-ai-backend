@@ -134,6 +134,7 @@ def register_static_routes(app: Flask) -> None:
     """Register static file serving routes for V3 script and other assets."""
     
     @app.route('/static/<path:filename>')
+    @app.route('/static/<path:filename>/')  # ← ONLY CHANGE: Added trailing slash support
     def serve_static(filename):
         """Serve static files including the V3 cookie script."""
         try:
@@ -170,7 +171,7 @@ def configure_cors(app: Flask) -> None:
     if not origins:
         # Default origins for development
         origins = [
-            "https://cookiebotai.netlify.app",
+            "https://cookiebotai.netlify.app",  # ← PRESERVED: Your working Netlify URL
             'http://localhost:3000',
             'http://localhost:3001',
             'https://cookiebot.ai',
@@ -189,3 +190,4 @@ app = create_app()
 
 if __name__ == '__main__':
     app.run(debug=True)
+
