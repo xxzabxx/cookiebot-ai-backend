@@ -4,7 +4,7 @@ Application factory for CookieBot.ai application.
 
 import os
 import logging
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_limiter import Limiter
@@ -40,6 +40,9 @@ def create_app(config_name: str = None) -> Flask:
     
     # Register blueprints
     register_blueprints(app)
+    
+    # Register static file serving route
+    register_static_routes(app)
     
     # Register error handlers
     register_error_handlers(app)
@@ -125,6 +128,36 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(privacy_insights_bp, url_prefix='/api/privacy-insights')
     app.register_blueprint(contact_bp, url_prefix='/api/contact')
     app.register_blueprint(billing_bp, url_prefix='/api/billing')
+
+
+def register_static_routes(app: Flask) -> None:
+    """Register static file serving routes for V3 script and other assets."""
+    
+    @app.route('/static/<path:filename>')
+    def serve_static(filename):
+        """Serve static files including the V3 cookie script."""
+        try:
+            # Get the absolute path to the static directory
+            static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static')
+            
+            # Log the request for debugging
+            app.logger.info(f"Serving static file: {filename} from {static_dir}")
+            
+            # Serve the file with proper CORS headers
+            response = send_from_directory(static_dir, filename)
+            
+            # Add CORS headers for script files
+            if filename.endswith('.js'):
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+                response.headers['Content-Type'] = 'application/javascript'
+            
+            return response
+            
+        except Exception as e:
+            app.logger.error(f"Error serving static file {filename}: {str(e)}")
+            return f"File not found: {filename}", 404
 
 
 def configure_cors(app: Flask) -> None:
