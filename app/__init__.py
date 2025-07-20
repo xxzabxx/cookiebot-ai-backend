@@ -1,7 +1,6 @@
 """
 Application factory for CookieBot.ai application.
 """
-
 import os
 import logging
 from flask import Flask, send_from_directory
@@ -23,7 +22,10 @@ def create_app(config_name: str = None) -> Flask:
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    app = Flask(__name__)
+    # Create Flask app with static file configuration
+    app = Flask(__name__, 
+                static_folder='../static',  # Points to /static from /app
+                static_url_path='/static')
     
     # Load configuration
     config_name = config_name or os.environ.get('FLASK_ENV', 'development')
@@ -41,7 +43,7 @@ def create_app(config_name: str = None) -> Flask:
     # Register blueprints
     register_blueprints(app)
     
-    # Register static file serving route
+    # Register static file serving route (backup method)
     register_static_routes(app)
     
     # Register error handlers
@@ -67,11 +69,10 @@ def init_extensions(app: Flask) -> None:
     
     # Rate Limiter
     limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=["1000 per hour"]
-)
-
+        app=app,
+        key_func=get_remote_address,
+        default_limits=["1000 per hour"]
+    )
     
     # Store extensions in app for access
     app.jwt = jwt
@@ -97,7 +98,7 @@ def init_database_tables(app: Flask) -> None:
                 logging.info("Database tables initialized successfully")
             else:
                 logging.error("Failed to connect to database")
-                
+                raise
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Database initialization failed: {str(e)}")
@@ -134,11 +135,27 @@ def register_static_routes(app: Flask) -> None:
     """Register static file serving routes for V3 script and other assets."""
     
     @app.route('/static/<path:filename>')
+    @app.route('/static/<path:filename>/')  # Handle both with and without trailing slash
     def serve_static(filename):
         """Serve static files including the V3 cookie script."""
         try:
-            # Get the absolute path to the static directory
-            static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static')
+            # Use multiple possible static directory locations
+            possible_static_dirs = [
+                os.path.join(os.getcwd(), 'static'),  # Current working directory
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static'),  # Relative to app
+                '/app/static',  # Absolute path for Railway
+                'static'  # Simple relative path
+            ]
+            
+            static_dir = None
+            for dir_path in possible_static_dirs:
+                if os.path.exists(dir_path):
+                    static_dir = dir_path
+                    break
+            
+            if not static_dir:
+                app.logger.error(f"Static directory not found. Checked: {possible_static_dirs}")
+                return {"error": {"code": "STATIC_001", "message": "Static directory not found"}}, 404
             
             # Log the request for debugging
             app.logger.info(f"Serving static file: {filename} from {static_dir}")
@@ -155,38 +172,23 @@ def register_static_routes(app: Flask) -> None:
             
             return response
             
+        except FileNotFoundError:
+            app.logger.warning(f"Static file not found: {filename}")
+            return {"error": {"code": "STATIC_002", "message": f"File not found: {filename}"}}, 404
         except Exception as e:
             app.logger.error(f"Error serving static file {filename}: {str(e)}")
-            return f"File not found: {filename}", 404
+            return {"error": {"code": "STATIC_003", "message": "Internal server error"}}, 500
 
 
 def configure_cors(app: Flask) -> None:
-    """Configure CORS with secure defaults."""
-    origins = app.config.get('CORS_ORIGINS', [])
-    
-    # Filter out empty strings
-    origins = [origin.strip() for origin in origins if origin.strip()]
-    
-    if not origins:
-        # Default origins for development
-        origins = [
-            "https://cookiebotai.netlify.app",
-            'http://localhost:3000',
-            'http://localhost:3001',
-            'https://cookiebot.ai',
-            'https://www.cookiebot.ai'
-        ]
-    
+    """Configure CORS for the application."""
     CORS(app, 
-         origins=origins,
-         supports_credentials=True,
-         allow_headers=['Content-Type', 'Authorization'],
-         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
-
-
-# Create application instance
-app = create_app()
-
-if __name__ == '__main__':
-    app.run(debug=True)
+         origins=[
+             "https://cookiebotai.netlify.app",
+             "https://cookiebot.ai",
+             "http://localhost:3000",
+             "http://localhost:5173"
+         ],
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization"])
 
