@@ -34,21 +34,49 @@ limiter = Limiter(key_func=get_remote_address)
 
 @websites_bp.route('', methods=['GET'])
 @jwt_required()
-@validate_query_params(PaginationSchema)
-def get_websites(validated_data: Dict[str, Any]):
+def get_websites():
     """
     Get user's websites with pagination and caching.
-    Fixes N+1 query problems identified in the review.
+    Handles empty states gracefully without requiring pagination parameters.
     """
     try:
         current_user_id = int(get_jwt_identity())
-        page = validated_data['page']
-        per_page = validated_data['per_page']
-        sort_by = validated_data['sort_by']
-        sort_order = validated_data['sort_order']
+        
+        # Get query parameters with defaults
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        sort_by = request.args.get('sort_by', 'created_at')
+        sort_order = request.args.get('sort_order', 'desc')
+        
+        # Validate parameters
+        if page < 1:
+            page = 1
+        if per_page < 1 or per_page > 100:
+            per_page = 20
+        if sort_by not in ['created_at', 'updated_at', 'domain', 'status', 'visitors_today', 'revenue_today']:
+            sort_by = 'created_at'
+        if sort_order not in ['asc', 'desc']:
+            sort_order = 'desc'
         
         # Build query with proper ordering
         query = Website.query.filter_by(user_id=current_user_id)
+        
+        # Get total count first
+        total_count = query.count()
+        
+        # Handle empty state gracefully
+        if total_count == 0:
+            return APIResponse.success({
+                'websites': [],
+                'pagination': {
+                    'page': 1,
+                    'per_page': per_page,
+                    'total_count': 0,
+                    'total_pages': 0,
+                    'has_next': False,
+                    'has_prev': False
+                }
+            })
         
         # Apply sorting
         if hasattr(Website, sort_by):
@@ -57,9 +85,6 @@ def get_websites(validated_data: Dict[str, Any]):
                 query = query.order_by(order_column.desc())
             else:
                 query = query.order_by(order_column.asc())
-        
-        # Get total count for pagination
-        total_count = query.count()
         
         # Apply pagination
         websites = query.offset((page - 1) * per_page).limit(per_page).all()
