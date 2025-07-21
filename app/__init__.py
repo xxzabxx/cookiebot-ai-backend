@@ -23,7 +23,8 @@ def create_app(config_name: str = None) -> Flask:
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    app = Flask(__name__)
+    # ONLY CHANGE: Add static folder configuration to Flask app
+    app = Flask(__name__, static_folder='../static', static_url_path='/static')
     
     # Load configuration
     config_name = config_name or os.environ.get('FLASK_ENV', 'development')
@@ -137,6 +138,7 @@ def configure_cors(app: Flask) -> None:
     if not origins:
         # Default origins for development
         origins = [
+            "https://cookiebotai.netlify.app",
             'http://localhost:3000',
             'http://localhost:3001',
             'https://cookiebot.ai',
