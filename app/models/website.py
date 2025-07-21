@@ -57,14 +57,35 @@ class Website(db.Model):
         return f"cb_{uuid.uuid4().hex[:16]}"
     
     def generate_integration_code(self) -> str:
-        """Generate JavaScript integration code for the website."""
+        """Generate JavaScript integration code for the website with API key and auto-registration."""
+        # Get user's API key
+        user_api_key = self.user.api_key if self.user else None
+        
         integration_code = f"""
 <!-- CookieBot.ai Integration -->
 <script>
 (function() {{
     var cb = window.CookieBot = window.CookieBot || {{}};
     cb.clientId = '{self.client_id}';
+    cb.apiKey = '{user_api_key}';
     cb.apiUrl = 'https://cookiebot-ai-backend-production.up.railway.app/api/public';
+    
+    // Auto-register website on script load
+    if (cb.apiKey && window.location.hostname) {{
+        fetch(cb.apiUrl + '/register-website', {{
+            method: 'POST',
+            headers: {{
+                'Content-Type': 'application/json'
+            }},
+            body: JSON.stringify({{
+                api_key: cb.apiKey,
+                domain: window.location.hostname,
+                referrer: document.referrer || window.location.href
+            }})
+        }}).catch(function(error) {{
+            console.warn('CookieBot auto-registration failed:', error);
+        }});
+    }}
     
     // Load CookieBot script
     var script = document.createElement('script');
