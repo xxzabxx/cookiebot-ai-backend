@@ -1,6 +1,6 @@
 """
-Public API endpoints for website tracking and analytics collection.
-These endpoints are called by the JavaScript integration code.
+Public API endpoints for website tracking and integration.
+Enhanced with auto-registration and improved tracking capabilities.
 """
 from datetime import datetime
 from typing import Dict, Any
@@ -10,6 +10,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import structlog
 
+from app.models.user import User
 from app.models.website import Website
 from app.models.analytics import AnalyticsEvent
 from app.utils.database import db
@@ -21,8 +22,142 @@ logger = structlog.get_logger()
 # Create blueprint
 public_bp = Blueprint('public', __name__)
 
-# Rate limiting for public endpoints
+# Rate limiting
 limiter = Limiter(key_func=get_remote_address)
+
+
+@public_bp.route('/register-website', methods=['POST'])
+@limiter.limit("10 per minute")
+def register_website():
+    """
+    Auto-register website when tracking script is first loaded.
+    This enables the auto-population feature for the websites dashboard.
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "JSON data required",
+                400
+            )
+        
+        # Validate required fields
+        api_key = data.get('api_key')
+        domain = data.get('domain')
+        referrer = data.get('referrer', '')
+        
+        if not api_key:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "API key is required",
+                400
+            )
+        
+        if not domain:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "Domain is required",
+                400
+            )
+        
+        # Authenticate user via API key
+        user = User.get_user_by_api_key(api_key)
+        if not user:
+            raise APIException(
+                ErrorCodes.AUTHENTICATION_FAILED,
+                "Invalid API key",
+                401
+            )
+        
+        # Clean and validate domain
+        clean_domain = domain.lower().strip()
+        if clean_domain.startswith('http://'):
+            clean_domain = clean_domain[7:]
+        elif clean_domain.startswith('https://'):
+            clean_domain = clean_domain[8:]
+        
+        # Remove www prefix and trailing slash
+        if clean_domain.startswith('www.'):
+            clean_domain = clean_domain[4:]
+        clean_domain = clean_domain.rstrip('/')
+        
+        # Basic domain validation
+        if not clean_domain or len(clean_domain) < 3:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "Invalid domain format",
+                400
+            )
+        
+        # Check if website already exists for this user
+        existing_website = Website.query.filter_by(
+            user_id=user.id,
+            domain=clean_domain
+        ).first()
+        
+        if existing_website:
+            # Return existing website info
+            logger.info(
+                "Website already registered",
+                user_id=user.id,
+                domain=clean_domain,
+                website_id=existing_website.id
+            )
+            
+            return APIResponse.success({
+                'website_id': existing_website.id,
+                'client_id': existing_website.client_id,
+                'domain': existing_website.domain,
+                'status': existing_website.status,
+                'message': 'Website already registered'
+            })
+        
+        # Create new website
+        website = Website(
+            user_id=user.id,
+            domain=clean_domain,
+            status='pending'
+        )
+        
+        # Generate integration code
+        website.generate_integration_code()
+        
+        db.session.add(website)
+        db.session.commit()
+        
+        logger.info(
+            "Website auto-registered",
+            user_id=user.id,
+            website_id=website.id,
+            domain=clean_domain,
+            client_id=website.client_id,
+            referrer=referrer
+        )
+        
+        return APIResponse.success({
+            'website_id': website.id,
+            'client_id': website.client_id,
+            'domain': website.domain,
+            'status': website.status,
+            'message': 'Website registered successfully'
+        }, status_code=201)
+        
+    except APIException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to register website",
+            api_key=data.get('api_key', 'unknown')[:10] + '...' if data and data.get('api_key') else 'none',
+            domain=data.get('domain', 'unknown') if data else 'none',
+            error=str(e)
+        )
+        raise APIException(
+            ErrorCodes.INTERNAL_ERROR,
+            "Failed to register website",
+            500
+        )
 
 
 @public_bp.route('/track', methods=['POST'])
@@ -30,62 +165,54 @@ limiter = Limiter(key_func=get_remote_address)
 @validate_json(AnalyticsEventSchema)
 def track_event(validated_data: Dict[str, Any]):
     """
-    Track analytics event from website integration.
-    This is the main endpoint called by the JavaScript code.
+    Track analytics events from websites.
+    Enhanced with better error handling and revenue tracking.
     """
     try:
         client_id = validated_data['client_id']
         event_type = validated_data['event_type']
         visitor_id = validated_data.get('visitor_id')
         consent_given = validated_data.get('consent_given')
-        revenue_generated = validated_data.get('revenue_generated', 0)
         metadata = validated_data.get('metadata', {})
         
-        # Find website by client_id
+        # Find website by client ID
         website = Website.query.filter_by(client_id=client_id).first()
         
         if not website:
             raise APIException(
                 ErrorCodes.RESOURCE_NOT_FOUND,
-                "Invalid client ID",
+                "Website not found",
                 404
             )
         
-        # Check if website is active
-        if website.status != 'active':
-            raise APIException(
-                ErrorCodes.RESOURCE_FORBIDDEN,
-                "Website tracking is not active",
-                403
-            )
-        
-        # Add request metadata
-        metadata.update({
-            'ip_address': request.remote_addr,
-            'user_agent': request.headers.get('User-Agent', ''),
-            'referer': request.headers.get('Referer', ''),
-            'timestamp': datetime.utcnow().isoformat()
-        })
-        
         # Create analytics event
-        event = AnalyticsEvent.create_event(
+        event = AnalyticsEvent(
             website_id=website.id,
             event_type=event_type,
             visitor_id=visitor_id,
             consent_given=consent_given,
-            revenue_generated=revenue_generated,
-            metadata=metadata
+            metadata=metadata,
+            ip_address=request.remote_addr,
+            user_agent=request.headers.get('User-Agent', '')
         )
         
-        # Update website daily metrics if needed
+        db.session.add(event)
+        
+        # Update website metrics
         if event_type == 'page_view':
-            # This could be optimized with background tasks
-            website.visitors_today = website.visitors_today + 1
+            website.visitors_today += 1
+        
+        # Calculate revenue for consent events
+        revenue_generated = 0.0
+        if event_type in ['consent_given', 'consent_denied'] and consent_given:
+            # Base revenue per consent (can be configured)
+            base_revenue = 0.05  # $0.05 per consent
+            revenue_generated = base_revenue
             
-        if revenue_generated > 0:
-            website.revenue_today = (website.revenue_today or 0) + revenue_generated
+            event.revenue_generated = revenue_generated
+            website.revenue_today += revenue_generated
             
-            # Add revenue to user balance (with revenue share)
+            # Add revenue to user account (70% share)
             user = website.user
             revenue_share = 0.7  # 70% to user, 30% to platform
             user_revenue = revenue_generated * revenue_share
@@ -119,7 +246,7 @@ def track_event(validated_data: Dict[str, Any]):
 def get_tracking_script():
     """
     Serve the JavaScript tracking script.
-    This script is loaded by websites to enable tracking.
+    This script is loaded by websites to enable tracking and auto-registration.
     """
     script_content = """
 (function() {
@@ -131,8 +258,12 @@ def get_tracking_script():
     var config = {
         apiUrl: CookieBot.apiUrl || 'https://cookiebot-ai-backend-production.up.railway.app/api/public',
         clientId: CookieBot.clientId,
+        apiKey: CookieBot.apiKey,
         debug: false
     };
+    
+    // Auto-register website if API key is available (handled by integration code)
+    // This script focuses on tracking and cookie consent functionality
     
     // Utility functions
     function generateVisitorId() {
@@ -157,7 +288,9 @@ def get_tracking_script():
             metadata: {
                 page_url: window.location.href,
                 page_title: document.title,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                user_agent: navigator.userAgent,
+                referrer: document.referrer
             }
         };
         
@@ -182,13 +315,17 @@ def get_tracking_script():
         });
     }
     
-    // Auto-track page view
-    trackEvent('page_view');
-    
-    // Cookie banner functionality
+    // Enhanced cookie banner functionality
     function showCookieBanner() {
-        if (localStorage.getItem('cb_consent_given') !== null) {
-            return; // Already responded
+        // Check if user already responded
+        var consentGiven = localStorage.getItem('cb_consent_given');
+        if (consentGiven !== null) {
+            // Track existing consent status
+            trackEvent('consent_status', { 
+                consent_given: consentGiven === 'true',
+                existing_consent: true 
+            });
+            return;
         }
         
         var banner = document.createElement('div');
@@ -198,59 +335,152 @@ def get_tracking_script():
             bottom: 0;
             left: 0;
             right: 0;
-            background: #2c3e50;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 20px;
             z-index: 10000;
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: 14px;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid rgba(255,255,255,0.1);
         `;
         
         banner.innerHTML = `
-            <div style="max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                <div style="flex: 1; margin-right: 20px;">
-                    <p style="margin: 0;">This website uses cookies to enhance your experience and analyze traffic. By continuing to use this site, you consent to our use of cookies.</p>
+            <div style="max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+                <div style="flex: 1; min-width: 300px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 18px; margin-right: 8px;">🍪</span>
+                        <strong style="font-size: 16px;">Cookie Consent</strong>
+                    </div>
+                    <p style="margin: 0; opacity: 0.9; line-height: 1.4;">
+                        We use cookies to enhance your experience, analyze traffic, and personalize content. 
+                        Your privacy matters to us.
+                    </p>
                 </div>
-                <div style="display: flex; gap: 10px;">
-                    <button id="cb-accept" style="background: #27ae60; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Accept</button>
-                    <button id="cb-decline" style="background: #e74c3c; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Decline</button>
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                    <button id="cb-accept" style="
+                        background: #27ae60; 
+                        color: white; 
+                        border: none; 
+                        padding: 12px 24px; 
+                        border-radius: 6px; 
+                        cursor: pointer; 
+                        font-weight: 600;
+                        transition: all 0.3s ease;
+                        box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+                    ">Accept All</button>
+                    <button id="cb-decline" style="
+                        background: transparent; 
+                        color: white; 
+                        border: 2px solid rgba(255,255,255,0.3); 
+                        padding: 10px 20px; 
+                        border-radius: 6px; 
+                        cursor: pointer;
+                        font-weight: 600;
+                        transition: all 0.3s ease;
+                    ">Decline</button>
                 </div>
             </div>
         `;
         
         document.body.appendChild(banner);
         
+        // Add hover effects
+        var acceptBtn = document.getElementById('cb-accept');
+        var declineBtn = document.getElementById('cb-decline');
+        
+        acceptBtn.onmouseover = function() {
+            this.style.background = '#229954';
+            this.style.transform = 'translateY(-1px)';
+        };
+        acceptBtn.onmouseout = function() {
+            this.style.background = '#27ae60';
+            this.style.transform = 'translateY(0)';
+        };
+        
+        declineBtn.onmouseover = function() {
+            this.style.background = 'rgba(255,255,255,0.1)';
+            this.style.borderColor = 'rgba(255,255,255,0.5)';
+        };
+        declineBtn.onmouseout = function() {
+            this.style.background = 'transparent';
+            this.style.borderColor = 'rgba(255,255,255,0.3)';
+        };
+        
         // Track banner shown
         trackEvent('banner_shown');
         
         // Handle consent
-        document.getElementById('cb-accept').onclick = function() {
+        acceptBtn.onclick = function() {
             localStorage.setItem('cb_consent_given', 'true');
             trackEvent('consent_given', { consent_given: true });
-            banner.remove();
+            banner.style.transform = 'translateY(100%)';
+            banner.style.transition = 'transform 0.3s ease';
+            setTimeout(function() { banner.remove(); }, 300);
         };
         
-        document.getElementById('cb-decline').onclick = function() {
+        declineBtn.onclick = function() {
             localStorage.setItem('cb_consent_given', 'false');
             trackEvent('consent_denied', { consent_given: false });
-            banner.remove();
+            banner.style.transform = 'translateY(100%)';
+            banner.style.transition = 'transform 0.3s ease';
+            setTimeout(function() { banner.remove(); }, 300);
         };
     }
     
-    // Show banner when page loads
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', showCookieBanner);
-    } else {
+    // Initialize tracking
+    function initialize() {
+        // Auto-track page view
+        trackEvent('page_view');
+        
+        // Show cookie banner
         showCookieBanner();
+        
+        // Track session start
+        if (!sessionStorage.getItem('cb_session_started')) {
+            sessionStorage.setItem('cb_session_started', 'true');
+            trackEvent('session_start');
+        }
+        
+        // Track page unload
+        window.addEventListener('beforeunload', function() {
+            trackEvent('page_unload');
+        });
+        
+        // Track scroll depth
+        var maxScroll = 0;
+        window.addEventListener('scroll', function() {
+            var scrollPercent = Math.round((window.scrollY / (document.body.scrollHeight - window.innerHeight)) * 100);
+            if (scrollPercent > maxScroll && scrollPercent % 25 === 0) {
+                maxScroll = scrollPercent;
+                trackEvent('scroll_depth', { scroll_percent: scrollPercent });
+            }
+        });
     }
     
-    // Expose API
-    window.CookieBot = {
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        initialize();
+    }
+    
+    // Expose enhanced API
+    window.CookieBot = Object.assign(CookieBot, {
         track: trackEvent,
         getVisitorId: generateVisitorId,
-        config: config
-    };
+        config: config,
+        showBanner: showCookieBanner,
+        getConsentStatus: function() {
+            var consent = localStorage.getItem('cb_consent_given');
+            return consent === null ? null : consent === 'true';
+        },
+        resetConsent: function() {
+            localStorage.removeItem('cb_consent_given');
+            showCookieBanner();
+        }
+    });
     
 })();
     """.strip()
