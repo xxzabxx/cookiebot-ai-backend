@@ -2,7 +2,7 @@
 Website model with enhanced validation and relationships.
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, DateTime, Text
@@ -41,6 +41,7 @@ class Website(db.Model):
     # Relationships
     user = relationship("User", back_populates="websites")
     analytics_events = relationship("AnalyticsEvent", back_populates="website", cascade="all, delete-orphan")
+    compliance_scans = relationship("ComplianceScan", back_populates="website", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f'<Website {self.domain}>'
