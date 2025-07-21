@@ -48,6 +48,9 @@ class User(db.Model):
     is_admin = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     
+    # API integration
+    api_key = Column(String(64), unique=True, nullable=True, index=True)
+    
     # Security fields
     failed_login_attempts = Column(Integer, default=0)
     account_locked_until = Column(DateTime)
@@ -72,6 +75,12 @@ class User(db.Model):
         # Use cost factor of 12 for good security/performance balance
         salt = bcrypt.gensalt(rounds=12)
         return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    
+    @staticmethod
+    def generate_api_key() -> str:
+        """Generate secure API key for external integrations."""
+        import secrets
+        return f"cb_api_{secrets.token_urlsafe(32)}"
     
     def check_password(self, password: str) -> bool:
         """Verify password against hash."""
@@ -218,7 +227,8 @@ class User(db.Model):
                 'stripe_customer_id': self.stripe_customer_id,
                 'failed_login_attempts': self.failed_login_attempts,
                 'account_locked_until': self.account_locked_until.isoformat() if self.account_locked_until else None,
-                'last_login_ip': self.last_login_ip
+                'last_login_ip': self.last_login_ip,
+                'api_key': self.api_key
             })
         
         return data
@@ -247,6 +257,7 @@ class User(db.Model):
         )
         
         user.set_password(password)
+        user.api_key = cls.generate_api_key()  # Auto-generate API key
         
         try:
             db.session.add(user)
@@ -286,6 +297,19 @@ class User(db.Model):
             user.record_failed_login(ip_address)
             db.session.commit()
             return None
+    
+    @classmethod
+    def get_user_by_api_key(cls, api_key: str) -> Optional['User']:
+        """Get user by API key for external integrations."""
+        if not api_key or not api_key.startswith('cb_api_'):
+            return None
+        
+        user = cls.query.filter_by(api_key=api_key).first()
+        
+        if user and user.is_active:
+            return user
+        
+        return None
     
     def update_subscription(
         self, 
