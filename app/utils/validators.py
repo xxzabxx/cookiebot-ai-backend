@@ -1,6 +1,7 @@
 """
 Comprehensive input validation system using Marshmallow.
 Enhanced with unified API key validation while preserving all existing functionality.
+FIXED: Validation decorators no longer mask real database/SQL errors.
 """
 from functools import wraps
 from typing import Dict, Any, Optional
@@ -8,8 +9,11 @@ from typing import Dict, Any, Optional
 from flask import request
 from marshmallow import Schema, fields, validate, ValidationError, post_load
 import re
+import structlog
 
 from app.utils.error_handlers import APIException, ErrorCodes
+
+logger = structlog.get_logger()
 
 
 class BaseSchema(Schema):
@@ -420,6 +424,7 @@ class ContactFormSchema(BaseSchema):
 def validate_json(schema_class: Schema):
     """
     Decorator for validating JSON request data.
+    FIXED: No longer masks database/SQL errors as validation errors.
     
     Args:
         schema_class: Marshmallow schema class for validation
@@ -445,6 +450,8 @@ def validate_json(schema_class: Schema):
                 return f(validated_data, *args, **kwargs)
                 
             except ValidationError as err:
+                # Handle Marshmallow validation errors
+                logger.warning("Request validation failed", validation_errors=err.messages)
                 raise APIException(
                     ErrorCodes.VALIDATION_ERROR,
                     "Request validation failed",
@@ -452,13 +459,19 @@ def validate_json(schema_class: Schema):
                     {"validation_errors": err.messages}
                 )
             except APIException:
+                # Re-raise API exceptions (don't mask them)
                 raise
             except Exception as e:
-                raise APIException(
-                    ErrorCodes.INTERNAL_ERROR,
-                    "Validation processing failed",
-                    500
+                # FIXED: Log the actual error and let it bubble up instead of masking it
+                logger.error(
+                    "Unexpected error during validation processing", 
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    endpoint=request.endpoint,
+                    method=request.method
                 )
+                # Don't mask the real error - let it bubble up
+                raise
         
         return decorated_function
     return decorator
@@ -467,6 +480,7 @@ def validate_json(schema_class: Schema):
 def validate_query_params(schema_class: Schema):
     """
     Decorator for validating query parameters.
+    FIXED: No longer masks database/SQL errors as validation errors.
     
     Args:
         schema_class: Marshmallow schema class for validation
@@ -486,6 +500,8 @@ def validate_query_params(schema_class: Schema):
                 return f(validated_data, *args, **kwargs)
                 
             except ValidationError as err:
+                # Handle Marshmallow validation errors
+                logger.warning("Query parameter validation failed", validation_errors=err.messages)
                 raise APIException(
                     ErrorCodes.VALIDATION_ERROR,
                     "Query parameter validation failed",
@@ -493,13 +509,19 @@ def validate_query_params(schema_class: Schema):
                     {"validation_errors": err.messages}
                 )
             except APIException:
+                # Re-raise API exceptions (don't mask them)
                 raise
             except Exception as e:
-                raise APIException(
-                    ErrorCodes.INTERNAL_ERROR,
-                    "Query validation processing failed",
-                    500
+                # FIXED: Log the actual error and let it bubble up instead of masking it
+                logger.error(
+                    "Unexpected error during query validation processing", 
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    endpoint=request.endpoint,
+                    method=request.method
                 )
+                # Don't mask the real error - let it bubble up
+                raise
         
         return decorated_function
     return decorator
