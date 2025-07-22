@@ -2,6 +2,7 @@
 Analytics model for tracking website events and metrics.
 Optimized for performance with proper indexing.
 Enhanced with unified API key support while maintaining full backward compatibility.
+FIXED: SQL BinaryExpression errors that caused registration failures.
 """
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
@@ -152,6 +153,7 @@ class AnalyticsEvent(db.Model):
         """
         Get comprehensive analytics for a website.
         Optimized query to avoid N+1 problems.
+        FIXED: SQL BinaryExpression errors.
         """
         
         # Base query
@@ -165,15 +167,16 @@ class AnalyticsEvent(db.Model):
             query = query.filter(cls.event_type == event_type)
         
         # Get aggregated data in a single query
+        # FIXED: Use .is_() for boolean comparisons to avoid BinaryExpression errors
         result = db.session.query(
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.sum(cls.revenue_generated).label('total_revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(cls.consent_given == False, 1)])
+                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
             ).label('consents_denied'),
             func.count(
                 func.case([(cls.event_type == 'page_view', 1)])
@@ -227,21 +230,23 @@ class AnalyticsEvent(db.Model):
     ) -> List[Dict[str, Any]]:
         """
         Get daily analytics breakdown for a website.
+        FIXED: SQL BinaryExpression errors.
         """
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
         # Query daily aggregated data
+        # FIXED: Use .is_() for boolean comparisons
         daily_data = db.session.query(
             func.date(cls.created_at).label('date'),
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.sum(cls.revenue_generated).label('revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(cls.consent_given == False, 1)])
+                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
             ).label('consents_denied')
         ).filter(
             cls.website_id == website_id,
@@ -360,6 +365,7 @@ class AnalyticsEvent(db.Model):
     ) -> Dict[str, Any]:
         """
         Get comprehensive analytics across all websites for a given API key.
+        FIXED: SQL BinaryExpression errors.
         """
         
         # Base query for unified analytics
@@ -373,16 +379,17 @@ class AnalyticsEvent(db.Model):
             query = query.filter(cls.domain == domain)
         
         # Get aggregated data across all websites
+        # FIXED: Use .is_() for boolean comparisons
         result = db.session.query(
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.count(func.distinct(cls.domain)).label('total_websites'),
             func.sum(cls.revenue_generated).label('total_revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(cls.consent_given == False, 1)])
+                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
             ).label('consents_denied'),
             func.count(
                 func.case([(cls.event_type == 'page_view', 1)])
@@ -445,18 +452,20 @@ class AnalyticsEvent(db.Model):
     ) -> List[Dict[str, Any]]:
         """
         Get analytics breakdown by website/domain for a given API key.
+        FIXED: SQL BinaryExpression errors.
         """
         
+        # FIXED: Use .is_() for boolean comparisons
         result = db.session.query(
             cls.domain,
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.sum(cls.revenue_generated).label('revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(cls.consent_given == False, 1)])
+                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
             ).label('consents_denied')
         ).filter(
             cls.api_key == api_key,
@@ -498,11 +507,13 @@ class AnalyticsEvent(db.Model):
     ) -> List[Dict[str, Any]]:
         """
         Get daily analytics breakdown for unified API key approach.
+        FIXED: SQL BinaryExpression errors.
         """
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
         # Query daily aggregated data
+        # FIXED: Use .is_() for boolean comparisons
         query = db.session.query(
             func.date(cls.created_at).label('date'),
             func.count(cls.id).label('total_events'),
@@ -510,10 +521,10 @@ class AnalyticsEvent(db.Model):
             func.count(func.distinct(cls.domain)).label('active_websites'),
             func.sum(cls.revenue_generated).label('revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(cls.consent_given == False, 1)])
+                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
             ).label('consents_denied')
         ).filter(
             cls.api_key == api_key,
@@ -558,17 +569,19 @@ class AnalyticsEvent(db.Model):
     ) -> Dict[str, Any]:
         """
         Get real-time statistics for unified API key approach.
+        FIXED: SQL BinaryExpression errors.
         """
         
         start_time = datetime.utcnow() - timedelta(minutes=minutes)
         
+        # FIXED: Use .is_() for boolean comparisons
         result = db.session.query(
             func.count(cls.id).label('recent_events'),
             func.count(func.distinct(cls.visitor_id)).label('active_visitors'),
             func.count(func.distinct(cls.domain)).label('active_websites'),
             func.sum(cls.revenue_generated).label('recent_revenue'),
             func.count(
-                func.case([(cls.consent_given == True, 1)])
+                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('recent_consents')
         ).filter(
             cls.api_key == api_key,
