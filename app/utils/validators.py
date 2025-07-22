@@ -2,6 +2,7 @@
 Comprehensive input validation system using Marshmallow.
 Enhanced with unified API key validation while preserving all existing functionality.
 FIXED: Validation decorators no longer mask real database/SQL errors.
+FIXED: PasswordField._validate() method signature corrected for Marshmallow compatibility.
 """
 from functools import wraps
 from typing import Dict, Any, Optional
@@ -36,8 +37,9 @@ class EmailField(fields.Email):
 class PasswordField(fields.String):
     """Password field with strength validation."""
     
-    def _validate(self, value, attr, data, **kwargs):
-        super()._validate(value, attr, data, **kwargs)
+    def _validate(self, value):
+        """FIXED: Corrected method signature for Marshmallow compatibility."""
+        super()._validate(value)
         
         if value:
             errors = []
@@ -75,8 +77,9 @@ class PasswordField(fields.String):
 class DomainField(fields.String):
     """Domain validation field."""
     
-    def _validate(self, value, attr, data, **kwargs):
-        super()._validate(value, attr, data, **kwargs)
+    def _validate(self, value):
+        """FIXED: Corrected method signature for Marshmallow compatibility."""
+        super()._validate(value)
         
         if value:
             # Remove protocol if present
@@ -96,8 +99,9 @@ class DomainField(fields.String):
 class APIKeyField(fields.String):
     """API key validation field for unified approach."""
     
-    def _validate(self, value, attr, data, **kwargs):
-        super()._validate(value, attr, data, **kwargs)
+    def _validate(self, value):
+        """FIXED: Corrected method signature for Marshmallow compatibility."""
+        super()._validate(value)
         
         if value:
             # API key format validation
