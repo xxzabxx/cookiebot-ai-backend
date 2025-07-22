@@ -1,9 +1,10 @@
 """
 Public API endpoints for website tracking and integration.
-Enhanced with auto-registration and improved tracking capabilities.
+Enhanced with auto-registration, improved tracking capabilities, and unified API key support.
+Maintains full backward compatibility while adding new unified features.
 """
-from datetime import datetime
-from typing import Dict, Any
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 
 from flask import Blueprint, request, jsonify
 from flask_limiter import Limiter
@@ -26,12 +27,13 @@ public_bp = Blueprint('public', __name__)
 limiter = Limiter(key_func=get_remote_address)
 
 
+# PRESERVED: Original auto-registration endpoint
 @public_bp.route('/register-website', methods=['POST'])
 @limiter.limit("10 per minute")
 def register_website():
     """
     Auto-register website when tracking script is first loaded.
-    This enables the auto-population feature for the websites dashboard.
+    Enhanced with unified API key support while maintaining backward compatibility.
     """
     try:
         data = request.get_json()
@@ -43,15 +45,38 @@ def register_website():
                 400
             )
         
-        # Validate required fields
+        # ENHANCED: Support both legacy client_id and new unified API key approaches
         api_key = data.get('api_key')
+        client_id = data.get('client_id')  # Legacy support
         domain = data.get('domain')
         referrer = data.get('referrer', '')
         
-        if not api_key:
+        # Determine authentication method
+        user = None
+        if api_key:
+            # NEW: Unified API key approach
+            user = User.get_user_by_api_key(api_key)
+            if not user:
+                raise APIException(
+                    ErrorCodes.AUTHENTICATION_FAILED,
+                    "Invalid API key",
+                    401
+                )
+        elif client_id:
+            # PRESERVED: Legacy client_id approach
+            existing_website = Website.query.filter_by(client_id=client_id).first()
+            if existing_website:
+                user = existing_website.user
+            else:
+                raise APIException(
+                    ErrorCodes.AUTHENTICATION_FAILED,
+                    "Invalid client ID",
+                    401
+                )
+        else:
             raise APIException(
                 ErrorCodes.VALIDATION_ERROR,
-                "API key is required",
+                "Either API key or client ID is required",
                 400
             )
         
@@ -60,15 +85,6 @@ def register_website():
                 ErrorCodes.VALIDATION_ERROR,
                 "Domain is required",
                 400
-            )
-        
-        # Authenticate user via API key
-        user = User.get_user_by_api_key(api_key)
-        if not user:
-            raise APIException(
-                ErrorCodes.AUTHENTICATION_FAILED,
-                "Invalid API key",
-                401
             )
         
         # Clean and validate domain
@@ -103,7 +119,8 @@ def register_website():
                 "Website already registered",
                 user_id=user.id,
                 domain=clean_domain,
-                website_id=existing_website.id
+                website_id=existing_website.id,
+                approach='unified' if api_key else 'legacy'
             )
             
             return APIResponse.success({
@@ -111,7 +128,8 @@ def register_website():
                 'client_id': existing_website.client_id,
                 'domain': existing_website.domain,
                 'status': existing_website.status,
-                'message': 'Website already registered'
+                'message': 'Website already registered',
+                'approach': 'unified' if api_key else 'legacy'
             })
         
         # Create new website
@@ -133,7 +151,8 @@ def register_website():
             website_id=website.id,
             domain=clean_domain,
             client_id=website.client_id,
-            referrer=referrer
+            referrer=referrer,
+            approach='unified' if api_key else 'legacy'
         )
         
         return APIResponse.success({
@@ -141,7 +160,8 @@ def register_website():
             'client_id': website.client_id,
             'domain': website.domain,
             'status': website.status,
-            'message': 'Website registered successfully'
+            'message': 'Website registered successfully',
+            'approach': 'unified' if api_key else 'legacy'
         }, status_code=201)
         
     except APIException:
@@ -160,70 +180,160 @@ def register_website():
         )
 
 
+# PRESERVED: Original tracking endpoint with enhancements
 @public_bp.route('/track', methods=['POST'])
 @limiter.limit("1000 per hour")
-@validate_json(AnalyticsEventSchema)
-def track_event(validated_data: Dict[str, Any]):
+def track_event():
     """
     Track analytics events from websites.
-    Enhanced with better error handling and revenue tracking.
+    Enhanced with unified API key support and better error handling.
     """
     try:
-        client_id = validated_data['client_id']
-        event_type = validated_data['event_type']
-        visitor_id = validated_data.get('visitor_id')
-        consent_given = validated_data.get('consent_given')
-        metadata = validated_data.get('metadata', {})
+        data = request.get_json()
         
-        # Find website by client ID
-        website = Website.query.filter_by(client_id=client_id).first()
-        
-        if not website:
+        if not data:
             raise APIException(
-                ErrorCodes.RESOURCE_NOT_FOUND,
-                "Website not found",
-                404
+                ErrorCodes.VALIDATION_ERROR,
+                "JSON data required",
+                400
             )
         
-        # Create analytics event
-        event = AnalyticsEvent(
+        # ENHANCED: Support both legacy and unified approaches
+        api_key = data.get('api_key')
+        client_id = data.get('client_id')
+        domain = data.get('domain')  # NEW: For unified approach
+        event_type = data.get('event_type')
+        visitor_id = data.get('visitor_id')
+        consent_given = data.get('consent_given')
+        metadata = data.get('metadata', {})
+        revenue_generated = data.get('revenue_generated', 0.0)
+        
+        if not event_type:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "Event type is required",
+                400
+            )
+        
+        website = None
+        user = None
+        approach = 'legacy'
+        
+        if api_key and domain:
+            # NEW: Unified API key approach
+            approach = 'unified'
+            user = User.get_user_by_api_key(api_key)
+            if not user:
+                raise APIException(
+                    ErrorCodes.AUTHENTICATION_FAILED,
+                    "Invalid API key",
+                    401
+                )
+            
+            # Clean domain
+            clean_domain = domain.lower().strip()
+            if clean_domain.startswith('http://'):
+                clean_domain = clean_domain[7:]
+            elif clean_domain.startswith('https://'):
+                clean_domain = clean_domain[8:]
+            if clean_domain.startswith('www.'):
+                clean_domain = clean_domain[4:]
+            clean_domain = clean_domain.rstrip('/')
+            
+            # Find or create website for unified approach
+            website = Website.query.filter_by(
+                user_id=user.id,
+                domain=clean_domain
+            ).first()
+            
+            if not website:
+                # Auto-create website for unified approach
+                website = Website(
+                    user_id=user.id,
+                    domain=clean_domain,
+                    status='active'  # Auto-activate for unified approach
+                )
+                website.generate_integration_code()
+                db.session.add(website)
+                db.session.flush()  # Get the ID
+                
+                logger.info(
+                    "Website auto-created for unified tracking",
+                    user_id=user.id,
+                    domain=clean_domain,
+                    website_id=website.id
+                )
+            
+        elif client_id:
+            # PRESERVED: Legacy client_id approach
+            website = Website.query.filter_by(client_id=client_id).first()
+            if not website:
+                raise APIException(
+                    ErrorCodes.RESOURCE_NOT_FOUND,
+                    "Website not found",
+                    404
+                )
+            user = website.user
+            
+        else:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "Either (api_key + domain) or client_id is required",
+                400
+            )
+        
+        # Create analytics event with enhanced data
+        event = AnalyticsEvent.create_event(
             website_id=website.id,
             event_type=event_type,
             visitor_id=visitor_id,
             consent_given=consent_given,
+            revenue_generated=revenue_generated,
             metadata=metadata,
+            # NEW: Unified fields
+            api_key=api_key if approach == 'unified' else None,
+            domain=domain if approach == 'unified' else website.domain,
             ip_address=request.remote_addr,
             user_agent=request.headers.get('User-Agent', '')
         )
         
-        db.session.add(event)
-        
         # Update website metrics
         if event_type == 'page_view':
-            website.visitors_today += 1
+            website.visitors_today = (website.visitors_today or 0) + 1
         
-        # Calculate revenue for consent events
-        revenue_generated = 0.0
+        # Enhanced revenue calculation
         if event_type in ['consent_given', 'consent_denied'] and consent_given:
-            # Base revenue per consent (can be configured)
-            base_revenue = 0.05  # $0.05 per consent
-            revenue_generated = base_revenue
+            if revenue_generated == 0.0:
+                # Default revenue calculation
+                base_revenue = 0.05  # $0.05 per consent
+                revenue_generated = base_revenue
+                event.revenue_generated = revenue_generated
             
-            event.revenue_generated = revenue_generated
-            website.revenue_today += revenue_generated
+            website.revenue_today = (website.revenue_today or 0) + revenue_generated
             
             # Add revenue to user account (70% share)
-            user = website.user
             revenue_share = 0.7  # 70% to user, 30% to platform
             user_revenue = revenue_generated * revenue_share
-            user.add_revenue(user_revenue, f"Revenue from {website.domain}")
+            if hasattr(user, 'add_revenue'):
+                user.add_revenue(user_revenue, f"Revenue from {website.domain}")
         
         website.updated_at = datetime.utcnow()
         db.session.commit()
         
+        logger.info(
+            "Event tracked successfully",
+            event_id=event.id,
+            website_id=website.id,
+            event_type=event_type,
+            approach=approach,
+            revenue=revenue_generated
+        )
+        
         return APIResponse.success({
             'event_id': event.id,
-            'status': 'tracked'
+            'status': 'tracked',
+            'approach': approach,
+            'website_id': website.id
         }, "Event tracked successfully")
         
     except APIException:
@@ -231,8 +341,7 @@ def track_event(validated_data: Dict[str, Any]):
     except Exception as e:
         logger.error(
             "Failed to track event",
-            client_id=validated_data.get('client_id'),
-            event_type=validated_data.get('event_type'),
+            data=data,
             error=str(e)
         )
         raise APIException(
@@ -242,11 +351,12 @@ def track_event(validated_data: Dict[str, Any]):
         )
 
 
+# PRESERVED: Original script serving endpoint
 @public_bp.route('/script.js', methods=['GET'])
 def get_tracking_script():
     """
     Serve the JavaScript tracking script.
-    This script is loaded by websites to enable tracking and auto-registration.
+    Enhanced with unified API key support while maintaining backward compatibility.
     """
     script_content = """
 (function() {
@@ -254,16 +364,43 @@ def get_tracking_script():
     
     var CookieBot = window.CookieBot || {};
     
-    // Configuration
+    // Enhanced configuration with unified support
     var config = {
         apiUrl: CookieBot.apiUrl || 'https://cookiebot-ai-backend-production.up.railway.app/api/public',
-        clientId: CookieBot.clientId,
-        apiKey: CookieBot.apiKey,
-        debug: false
+        clientId: CookieBot.clientId,  // Legacy support
+        apiKey: CookieBot.apiKey,      // NEW: Unified approach
+        debug: CookieBot.debug || false,
+        approach: CookieBot.apiKey ? 'unified' : 'legacy'
     };
     
-    // Auto-register website if API key is available (handled by integration code)
-    // This script focuses on tracking and cookie consent functionality
+    // Auto-register website for unified approach
+    if (config.apiKey && config.approach === 'unified') {
+        fetch(config.apiUrl + '/register-website', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                api_key: config.apiKey,
+                domain: window.location.hostname,
+                referrer: document.referrer || window.location.href
+            })
+        }).then(function(response) {
+            return response.json();
+        }).then(function(data) {
+            if (data.success) {
+                config.clientId = data.data.client_id;
+                config.websiteId = data.data.website_id;
+                if (config.debug) {
+                    console.log('CookieBot: Website auto-registered (unified)', data.data);
+                }
+            }
+        }).catch(function(error) {
+            if (config.debug) {
+                console.warn('CookieBot auto-registration failed:', error);
+            }
+        });
+    }
     
     // Utility functions
     function generateVisitorId() {
@@ -276,13 +413,7 @@ def get_tracking_script():
     }
     
     function trackEvent(eventType, data) {
-        if (!config.clientId) {
-            console.warn('CookieBot: Client ID not configured');
-            return;
-        }
-        
         var payload = {
-            client_id: config.clientId,
             event_type: eventType,
             visitor_id: generateVisitorId(),
             metadata: {
@@ -293,6 +424,19 @@ def get_tracking_script():
                 referrer: document.referrer
             }
         };
+        
+        // Enhanced: Support both approaches
+        if (config.approach === 'unified' && config.apiKey) {
+            payload.api_key = config.apiKey;
+            payload.domain = window.location.hostname;
+        } else if (config.clientId) {
+            payload.client_id = config.clientId;
+        } else {
+            if (config.debug) {
+                console.warn('CookieBot: No valid authentication configured');
+            }
+            return;
+        }
         
         // Merge additional data
         if (data) {
@@ -308,6 +452,10 @@ def get_tracking_script():
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(payload)
+        }).then(function(response) {
+            if (config.debug && response.ok) {
+                console.log('CookieBot: Event tracked -', eventType);
+            }
         }).catch(function(error) {
             if (config.debug) {
                 console.error('CookieBot tracking error:', error);
@@ -435,7 +583,9 @@ def get_tracking_script():
         trackEvent('page_view');
         
         // Show cookie banner
-        showCookieBanner();
+        if (CookieBot.config && CookieBot.config.autoShow !== false) {
+            showCookieBanner();
+        }
         
         // Track session start
         if (!sessionStorage.getItem('cb_session_started')) {
@@ -466,7 +616,7 @@ def get_tracking_script():
         initialize();
     }
     
-    // Expose enhanced API
+    // Enhanced API exposure
     window.CookieBot = Object.assign(CookieBot, {
         track: trackEvent,
         getVisitorId: generateVisitorId,
@@ -479,6 +629,13 @@ def get_tracking_script():
         resetConsent: function() {
             localStorage.removeItem('cb_consent_given');
             showCookieBanner();
+        },
+        // NEW: Unified approach helpers
+        isUnified: function() {
+            return config.approach === 'unified';
+        },
+        getApproach: function() {
+            return config.approach;
         }
     });
     
@@ -492,12 +649,37 @@ def get_tracking_script():
     return response
 
 
-@public_bp.route('/status/<client_id>', methods=['GET'])
+# PRESERVED: Original status endpoint with enhancements
+@public_bp.route('/status/<identifier>', methods=['GET'])
 @limiter.limit("100 per hour")
-def get_website_status(client_id: str):
-    """Get website status for client-side validation."""
+def get_website_status(identifier: str):
+    """
+    Get website status for client-side validation.
+    Enhanced to support both client_id and API key identification.
+    """
     try:
-        website = Website.query.filter_by(client_id=client_id).first()
+        website = None
+        approach = 'legacy'
+        
+        # Try to find by client_id first (legacy)
+        website = Website.query.filter_by(client_id=identifier).first()
+        
+        if not website:
+            # Try to find by API key (unified approach)
+            user = User.get_user_by_api_key(identifier)
+            if user:
+                approach = 'unified'
+                # For unified approach, return aggregate status
+                websites = Website.query.filter_by(user_id=user.id).all()
+                if websites:
+                    active_count = sum(1 for w in websites if w.status == 'active')
+                    return APIResponse.success({
+                        'approach': 'unified',
+                        'total_websites': len(websites),
+                        'active_websites': active_count,
+                        'tracking_enabled': active_count > 0,
+                        'user_id': user.id
+                    })
         
         if not website:
             return APIResponse.error(
@@ -507,13 +689,15 @@ def get_website_status(client_id: str):
             )
         
         return APIResponse.success({
+            'approach': approach,
             'status': website.status,
             'domain': website.domain,
-            'tracking_enabled': website.status == 'active'
+            'tracking_enabled': website.status == 'active',
+            'website_id': website.id
         })
         
     except Exception as e:
-        logger.error("Failed to get website status", client_id=client_id, error=str(e))
+        logger.error("Failed to get website status", identifier=identifier, error=str(e))
         raise APIException(
             ErrorCodes.INTERNAL_ERROR,
             "Failed to get website status",
@@ -521,6 +705,7 @@ def get_website_status(client_id: str):
         )
 
 
+# PRESERVED: Privacy policy endpoint
 @public_bp.route('/privacy-policy', methods=['GET'])
 def get_privacy_policy():
     """Serve privacy policy for compliance."""
@@ -550,15 +735,18 @@ def get_privacy_policy():
     return APIResponse.success(privacy_policy)
 
 
+# PRESERVED: Batch tracking endpoint with enhancements
 @public_bp.route('/batch-track', methods=['POST'])
 @limiter.limit("100 per hour")
 def batch_track_events():
     """
     Track multiple events in a single request for performance.
+    Enhanced with unified API key support.
     """
     try:
         data = request.get_json() or {}
         events = data.get('events', [])
+        api_key = data.get('api_key')  # NEW: Unified approach
         
         if not events or len(events) > 50:  # Limit batch size
             raise APIException(
@@ -568,28 +756,81 @@ def batch_track_events():
             )
         
         processed_events = []
+        user = None
+        approach = 'legacy'
+        
+        # NEW: Unified API key authentication
+        if api_key:
+            approach = 'unified'
+            user = User.get_user_by_api_key(api_key)
+            if not user:
+                raise APIException(
+                    ErrorCodes.AUTHENTICATION_FAILED,
+                    "Invalid API key",
+                    401
+                )
         
         for event_data in events:
             try:
-                # Validate each event
-                schema = AnalyticsEventSchema()
-                validated_event = schema.load(event_data)
+                website = None
                 
-                client_id = validated_event['client_id']
+                if approach == 'unified':
+                    # NEW: Unified approach
+                    domain = event_data.get('domain')
+                    if not domain:
+                        continue
+                    
+                    # Clean domain
+                    clean_domain = domain.lower().strip()
+                    if clean_domain.startswith('http://'):
+                        clean_domain = clean_domain[7:]
+                    elif clean_domain.startswith('https://'):
+                        clean_domain = clean_domain[8:]
+                    if clean_domain.startswith('www.'):
+                        clean_domain = clean_domain[4:]
+                    clean_domain = clean_domain.rstrip('/')
+                    
+                    # Find or create website
+                    website = Website.query.filter_by(
+                        user_id=user.id,
+                        domain=clean_domain
+                    ).first()
+                    
+                    if not website:
+                        website = Website(
+                            user_id=user.id,
+                            domain=clean_domain,
+                            status='active'
+                        )
+                        website.generate_integration_code()
+                        db.session.add(website)
+                        db.session.flush()
+                else:
+                    # PRESERVED: Legacy approach
+                    client_id = event_data.get('client_id')
+                    if not client_id:
+                        continue
+                    
+                    website = Website.query.filter_by(client_id=client_id).first()
+                    if not website or website.status != 'active':
+                        continue
                 
-                # Find website
-                website = Website.query.filter_by(client_id=client_id).first()
-                if not website or website.status != 'active':
-                    continue  # Skip invalid events
+                if not website:
+                    continue
                 
                 # Create event
                 event = AnalyticsEvent.create_event(
                     website_id=website.id,
-                    event_type=validated_event['event_type'],
-                    visitor_id=validated_event.get('visitor_id'),
-                    consent_given=validated_event.get('consent_given'),
-                    revenue_generated=validated_event.get('revenue_generated', 0),
-                    metadata=validated_event.get('metadata', {})
+                    event_type=event_data.get('event_type', 'unknown'),
+                    visitor_id=event_data.get('visitor_id'),
+                    consent_given=event_data.get('consent_given'),
+                    revenue_generated=event_data.get('revenue_generated', 0),
+                    metadata=event_data.get('metadata', {}),
+                    # NEW: Unified fields
+                    api_key=api_key if approach == 'unified' else None,
+                    domain=event_data.get('domain') if approach == 'unified' else website.domain,
+                    ip_address=request.remote_addr,
+                    user_agent=request.headers.get('User-Agent', '')
                 )
                 
                 processed_events.append(event.id)
@@ -600,7 +841,8 @@ def batch_track_events():
         
         return APIResponse.success({
             'processed_count': len(processed_events),
-            'event_ids': processed_events
+            'event_ids': processed_events,
+            'approach': approach
         }, f"Processed {len(processed_events)} events")
         
     except APIException:
@@ -611,5 +853,121 @@ def batch_track_events():
             ErrorCodes.INTERNAL_ERROR,
             "Failed to process batch events",
             500
+        )
+
+
+# NEW: Unified dashboard summary endpoint
+@public_bp.route('/dashboard-summary', methods=['POST'])
+@limiter.limit("100 per hour")
+def get_unified_dashboard_summary():
+    """
+    Get dashboard summary using unified API key approach.
+    Provides cross-website analytics for a user.
+    """
+    try:
+        data = request.get_json() or {}
+        api_key = data.get('api_key')
+        days = data.get('days', 30)
+        
+        if not api_key:
+            raise APIException(
+                ErrorCodes.VALIDATION_ERROR,
+                "API key is required",
+                400
+            )
+        
+        # Authenticate user
+        user = User.get_user_by_api_key(api_key)
+        if not user:
+            raise APIException(
+                ErrorCodes.AUTHENTICATION_FAILED,
+                "Invalid API key",
+                401
+            )
+        
+        # Get unified analytics
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        
+        analytics = AnalyticsEvent.get_unified_analytics(
+            api_key=api_key,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Get website breakdown
+        website_breakdown = AnalyticsEvent.get_unified_website_breakdown(
+            api_key=api_key,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Get recent activity
+        recent_events = AnalyticsEvent.query.filter(
+            AnalyticsEvent.api_key == api_key,
+            AnalyticsEvent.created_at >= datetime.utcnow() - timedelta(hours=24)
+        ).order_by(
+            AnalyticsEvent.created_at.desc()
+        ).limit(10).all()
+        
+        recent_activity = [
+            {
+                'event_type': event.event_type,
+                'website_domain': event.domain,
+                'created_at': event.created_at.isoformat(),
+                'consent_given': event.consent_given,
+                'revenue_generated': float(event.revenue_generated or 0)
+            }
+            for event in recent_events
+        ]
+        
+        return APIResponse.success({
+            'approach': 'unified',
+            'total_websites': analytics['total_websites'],
+            'total_visitors_today': analytics['unique_visitors'],
+            'total_revenue_today': analytics['total_revenue'],
+            'average_consent_rate': analytics['consent_rate'],
+            'website_breakdown': website_breakdown,
+            'recent_activity': recent_activity,
+            'period_days': days
+        })
+        
+    except APIException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get unified dashboard summary", api_key=api_key[:10] + '...' if api_key else 'none', error=str(e))
+        raise APIException(
+            ErrorCodes.INTERNAL_ERROR,
+            "Failed to get dashboard summary",
+            500
+        )
+
+
+# NEW: Health check endpoint
+@public_bp.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for monitoring."""
+    try:
+        # Basic database connectivity check
+        db.session.execute('SELECT 1')
+        
+        return APIResponse.success({
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'version': '2.0.0',
+            'features': {
+                'unified_api_key': True,
+                'legacy_client_id': True,
+                'auto_registration': True,
+                'batch_tracking': True
+            }
+        })
+        
+    except Exception as e:
+        logger.error("Health check failed", error=str(e))
+        return APIResponse.error(
+            ErrorCodes.INTERNAL_ERROR,
+            "Service unhealthy",
+            status_code=503
         )
 
