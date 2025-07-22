@@ -1,6 +1,6 @@
 """
 User model with enhanced security and validation.
-Fixes authentication and user management issues identified in the review.
+Enhanced with unified API key support and registration fix to solve "Validation processing failed" error.
 """
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -17,7 +17,7 @@ logger = structlog.get_logger()
 
 
 class User(db.Model):
-    """Enhanced User model with security improvements."""
+    """Enhanced User model with security improvements and unified API key support."""
     
     __tablename__ = 'users'
     
@@ -48,8 +48,8 @@ class User(db.Model):
     is_admin = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     
-    # API integration
-    api_key = Column(String(64), unique=True, nullable=True, index=True)
+    # ENHANCED: API integration with unified support
+    api_key = Column(String(64), unique=True, nullable=False, index=True)  # Made NOT NULL for unified approach
     
     # Security fields
     failed_login_attempts = Column(Integer, default=0)
@@ -78,9 +78,18 @@ class User(db.Model):
     
     @staticmethod
     def generate_api_key() -> str:
-        """Generate secure API key for external integrations."""
+        """
+        Generate secure API key for unified approach.
+        ENHANCED: Ensures consistent format for unified API key system.
+        """
         import secrets
-        return f"cb_api_{secrets.token_urlsafe(32)}"
+        import string
+        
+        # Generate 57 random characters (64 total - 7 for prefix)
+        alphabet = string.ascii_letters + string.digits + '_'
+        random_part = ''.join(secrets.choice(alphabet) for _ in range(57))
+        
+        return f'cb_api_{random_part}'
     
     def check_password(self, password: str) -> bool:
         """Verify password against hash."""
@@ -97,6 +106,41 @@ class User(db.Model):
         """Set new password with proper hashing."""
         self.password_hash = self.hash_password(password)
         self.updated_at = datetime.utcnow()
+    
+    def ensure_api_key(self) -> None:
+        """
+        REGISTRATION FIX: Ensure user has a valid API key.
+        This fixes the "Validation processing failed" error during registration.
+        """
+        if not self.api_key or not self.api_key.startswith('cb_api_'):
+            self.api_key = self.generate_api_key()
+            self.updated_at = datetime.utcnow()
+            
+            logger.info(
+                "API key generated for user",
+                user_id=self.id,
+                email=self.email,
+                api_key_prefix=self.api_key[:10] + '...'
+            )
+    
+    def regenerate_api_key(self) -> str:
+        """
+        Generate a new API key for the user.
+        Useful for security purposes or if key is compromised.
+        """
+        old_key_prefix = self.api_key[:10] + '...' if self.api_key else 'none'
+        self.api_key = self.generate_api_key()
+        self.updated_at = datetime.utcnow()
+        
+        logger.info(
+            "API key regenerated",
+            user_id=self.id,
+            email=self.email,
+            old_key_prefix=old_key_prefix,
+            new_key_prefix=self.api_key[:10] + '...'
+        )
+        
+        return self.api_key
     
     def is_account_locked(self) -> bool:
         """Check if account is currently locked."""
@@ -161,25 +205,30 @@ class User(db.Model):
         if not self.is_active:
             return False
         
-        # Feature access matrix
+        # Enhanced feature access matrix with unified API key features
         feature_access = {
             'free': [
-                'basic_analytics', 'single_website', 'basic_compliance'
+                'basic_analytics', 'single_website', 'basic_compliance',
+                'unified_api_key'  # NEW: Unified API key available to all tiers
             ],
             'basic': [
                 'basic_analytics', 'multiple_websites', 'basic_compliance',
-                'email_support', 'custom_banner'
+                'email_support', 'custom_banner', 'unified_api_key',
+                'cross_website_analytics'  # NEW: Cross-website analytics
             ],
             'pro': [
                 'basic_analytics', 'advanced_analytics', 'unlimited_websites',
                 'basic_compliance', 'advanced_compliance', 'email_support',
-                'priority_support', 'custom_banner', 'white_label'
+                'priority_support', 'custom_banner', 'white_label',
+                'unified_api_key', 'cross_website_analytics', 'real_time_analytics'
             ],
             'enterprise': [
                 'basic_analytics', 'advanced_analytics', 'unlimited_websites',
                 'basic_compliance', 'advanced_compliance', 'email_support',
                 'priority_support', 'phone_support', 'custom_banner',
-                'white_label', 'api_access', 'custom_integrations'
+                'white_label', 'api_access', 'custom_integrations',
+                'unified_api_key', 'cross_website_analytics', 'real_time_analytics',
+                'bulk_operations'  # NEW: Bulk operations for enterprise
             ]
         }
         
@@ -219,7 +268,10 @@ class User(db.Model):
             'revenue_balance': float(self.revenue_balance) if self.revenue_balance else 0.0,
             'is_admin': self.is_admin,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'last_login_at': self.last_login_at.isoformat() if self.last_login_at else None
+            'last_login_at': self.last_login_at.isoformat() if self.last_login_at else None,
+            # NEW: Always include API key for unified approach
+            'api_key': self.api_key,
+            'unified_features_enabled': True
         }
         
         if include_sensitive:
@@ -227,8 +279,7 @@ class User(db.Model):
                 'stripe_customer_id': self.stripe_customer_id,
                 'failed_login_attempts': self.failed_login_attempts,
                 'account_locked_until': self.account_locked_until.isoformat() if self.account_locked_until else None,
-                'last_login_ip': self.last_login_ip,
-                'api_key': self.api_key
+                'last_login_ip': self.last_login_ip
             })
         
         return data
@@ -240,30 +291,53 @@ class User(db.Model):
         password: str, 
         first_name: str, 
         last_name: str,
-        company: Optional[str] = None
+        company: Optional[str] = None,
+        api_key: Optional[str] = None  # NEW: Allow custom API key during creation
     ) -> 'User':
-        """Create new user with proper validation and security."""
+        """
+        Create new user with proper validation and security.
+        REGISTRATION FIX: Always ensures API key is generated.
+        """
         # Check if user already exists
         existing_user = cls.query.filter_by(email=email.lower()).first()
         if existing_user:
             raise ValueError("User with this email already exists")
+        
+        # REGISTRATION FIX: Ensure API key is always provided
+        if not api_key:
+            api_key = cls.generate_api_key()
+        
+        # Validate API key format if provided
+        if not api_key.startswith('cb_api_') or len(api_key) != 64:
+            raise ValueError("Invalid API key format")
+        
+        # Check if API key already exists
+        existing_api_key = cls.query.filter_by(api_key=api_key).first()
+        if existing_api_key:
+            # Generate a new one if collision
+            api_key = cls.generate_api_key()
         
         # Create new user
         user = cls(
             email=email.lower().strip(),
             first_name=first_name.strip(),
             last_name=last_name.strip(),
-            company=company.strip() if company else None
+            company=company.strip() if company else None,
+            api_key=api_key  # REGISTRATION FIX: Always set API key
         )
         
         user.set_password(password)
-        user.api_key = cls.generate_api_key()  # Auto-generate API key
         
         try:
             db.session.add(user)
             db.session.commit()
             
-            logger.info("New user created", user_id=user.id, email=user.email)
+            logger.info(
+                "New user created with unified API key",
+                user_id=user.id,
+                email=user.email,
+                api_key_prefix=user.api_key[:10] + '...'
+            )
             return user
             
         except Exception as e:
@@ -290,6 +364,9 @@ class User(db.Model):
             return None
         
         if user.check_password(password):
+            # REGISTRATION FIX: Ensure API key exists even for existing users
+            user.ensure_api_key()
+            
             user.record_successful_login(ip_address)
             db.session.commit()
             return user
@@ -300,14 +377,30 @@ class User(db.Model):
     
     @classmethod
     def get_user_by_api_key(cls, api_key: str) -> Optional['User']:
-        """Get user by API key for external integrations."""
+        """
+        Get user by API key for unified approach.
+        ENHANCED: Better validation and logging.
+        """
         if not api_key or not api_key.startswith('cb_api_'):
+            logger.debug("Invalid API key format", api_key_prefix=api_key[:10] + '...' if api_key else 'none')
+            return None
+        
+        if len(api_key) != 64:
+            logger.debug("Invalid API key length", api_key_length=len(api_key))
             return None
         
         user = cls.query.filter_by(api_key=api_key).first()
         
         if user and user.is_active:
+            # Ensure API key is still valid format (defensive programming)
+            if not user.api_key or not user.api_key.startswith('cb_api_'):
+                user.ensure_api_key()
+                db.session.commit()
+            
             return user
+        
+        if user and not user.is_active:
+            logger.warning("API key access attempt for inactive user", user_id=user.id)
         
         return None
     
@@ -350,4 +443,59 @@ class User(db.Model):
             new_balance=float(self.revenue_balance),
             description=description
         )
+    
+    # NEW: Unified API key management methods
+    def get_unified_stats(self) -> Dict[str, Any]:
+        """
+        Get unified statistics across all websites for this user.
+        """
+        from app.models.analytics import AnalyticsEvent
+        from datetime import datetime, timedelta
+        
+        # Get stats for last 30 days
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=30)
+        
+        stats = AnalyticsEvent.get_unified_analytics(
+            api_key=self.api_key,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        return stats
+    
+    def get_website_count(self) -> int:
+        """Get total number of websites for this user."""
+        return len(self.websites)
+    
+    def can_add_website(self) -> bool:
+        """Check if user can add another website based on their plan."""
+        limit = self.get_website_limit()
+        if limit == -1:  # Unlimited
+            return True
+        
+        current_count = self.get_website_count()
+        return current_count < limit
+    
+    @classmethod
+    def migrate_existing_users_api_keys(cls) -> int:
+        """
+        MIGRATION HELPER: Ensure all existing users have API keys.
+        This fixes any users created before the unified API key system.
+        """
+        users_without_api_keys = cls.query.filter(
+            (cls.api_key.is_(None)) | 
+            (~cls.api_key.startswith('cb_api_'))
+        ).all()
+        
+        updated_count = 0
+        for user in users_without_api_keys:
+            user.ensure_api_key()
+            updated_count += 1
+        
+        if updated_count > 0:
+            db.session.commit()
+            logger.info(f"Migrated {updated_count} users to have API keys")
+        
+        return updated_count
 
