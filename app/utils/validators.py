@@ -1,6 +1,6 @@
 """
 Comprehensive input validation system using Marshmallow.
-Fixes the missing input validation issues identified in the review.
+Enhanced with unified API key validation while preserving all existing functionality.
 """
 from functools import wraps
 from typing import Dict, Any, Optional
@@ -88,6 +88,26 @@ class DomainField(fields.String):
                 raise ValidationError("Invalid domain format")
 
 
+# NEW: Unified API key validation field
+class APIKeyField(fields.String):
+    """API key validation field for unified approach."""
+    
+    def _validate(self, value, attr, data, **kwargs):
+        super()._validate(value, attr, data, **kwargs)
+        
+        if value:
+            # API key format validation
+            if not value.startswith('cb_api_'):
+                raise ValidationError("API key must start with 'cb_api_'")
+            
+            if len(value) != 64:  # cb_api_ (7) + 57 characters
+                raise ValidationError("API key must be exactly 64 characters long")
+            
+            # Check for valid characters (alphanumeric + underscore)
+            if not re.match(r'^cb_api_[a-zA-Z0-9_]+$', value):
+                raise ValidationError("API key contains invalid characters")
+
+
 # Authentication Schemas
 class UserRegistrationSchema(BaseSchema):
     """Schema for user registration validation."""
@@ -108,6 +128,8 @@ class UserRegistrationSchema(BaseSchema):
         validate=validate.Length(max=255),
         missing=None
     )
+    # NEW: Optional API key for registration (will be auto-generated if not provided)
+    api_key = APIKeyField(missing=None)
 
 
 class UserLoginSchema(BaseSchema):
@@ -157,19 +179,26 @@ class WebsiteUpdateSchema(BaseSchema):
     )
 
 
-# Analytics Schemas
+# ENHANCED: Analytics Schemas with unified support
 class AnalyticsEventSchema(BaseSchema):
-    """Schema for analytics event tracking."""
+    """Schema for analytics event tracking with unified API key support."""
     
+    # PRESERVED: Legacy client_id support
     client_id = fields.Str(
-        required=True,
-        validate=validate.Length(min=1, max=255)
+        validate=validate.Length(min=1, max=255),
+        missing=None
     )
+    
+    # NEW: Unified API key support
+    api_key = APIKeyField(missing=None)
+    domain = DomainField(missing=None)
+    
     event_type = fields.Str(
         required=True,
         validate=validate.OneOf([
             'page_view', 'consent_given', 'consent_denied', 
-            'banner_shown', 'settings_opened'
+            'banner_shown', 'settings_opened', 'session_start',
+            'page_unload', 'scroll_depth', 'consent_status'
         ])
     )
     visitor_id = fields.Str(
@@ -182,6 +211,30 @@ class AnalyticsEventSchema(BaseSchema):
         missing=0
     )
     metadata = fields.Dict(missing=dict)
+    
+    # NEW: Enhanced tracking fields
+    ip_address = fields.Str(
+        validate=validate.Length(max=45),  # IPv6 support
+        missing=None
+    )
+    user_agent = fields.Str(
+        validate=validate.Length(max=500),
+        missing=None
+    )
+    
+    @post_load
+    def validate_authentication(self, data, **kwargs):
+        """Ensure either client_id or (api_key + domain) is provided."""
+        has_client_id = data.get('client_id')
+        has_api_key = data.get('api_key')
+        has_domain = data.get('domain')
+        
+        if not has_client_id and not (has_api_key and has_domain):
+            raise ValidationError({
+                '_schema': ['Either client_id or (api_key + domain) must be provided']
+            })
+        
+        return data
 
 
 class AnalyticsQuerySchema(BaseSchema):
@@ -196,9 +249,85 @@ class AnalyticsQuerySchema(BaseSchema):
     event_type = fields.Str(
         validate=validate.OneOf([
             'page_view', 'consent_given', 'consent_denied', 
-            'banner_shown', 'settings_opened'
+            'banner_shown', 'settings_opened', 'session_start',
+            'page_unload', 'scroll_depth', 'consent_status'
         ]),
         missing=None
+    )
+
+
+# NEW: Unified analytics schemas
+class UnifiedAnalyticsQuerySchema(BaseSchema):
+    """Schema for unified analytics queries using API key."""
+    
+    api_key = APIKeyField(required=True)
+    start_date = fields.Date(required=True)
+    end_date = fields.Date(required=True)
+    domain = DomainField(missing=None)  # Optional domain filter
+    event_type = fields.Str(
+        validate=validate.OneOf([
+            'page_view', 'consent_given', 'consent_denied', 
+            'banner_shown', 'settings_opened', 'session_start',
+            'page_unload', 'scroll_depth', 'consent_status'
+        ]),
+        missing=None
+    )
+
+
+class UnifiedDashboardSchema(BaseSchema):
+    """Schema for unified dashboard requests."""
+    
+    api_key = APIKeyField(required=True)
+    days = fields.Int(
+        validate=validate.Range(min=1, max=365),
+        missing=30
+    )
+    include_breakdown = fields.Bool(missing=True)
+    include_recent_activity = fields.Bool(missing=True)
+
+
+class WebsiteRegistrationSchema(BaseSchema):
+    """Schema for website auto-registration with unified support."""
+    
+    # PRESERVED: Legacy support
+    client_id = fields.Str(
+        validate=validate.Length(min=1, max=255),
+        missing=None
+    )
+    
+    # NEW: Unified support
+    api_key = APIKeyField(missing=None)
+    
+    domain = DomainField(required=True)
+    referrer = fields.Str(
+        validate=validate.Length(max=500),
+        missing=''
+    )
+    
+    @post_load
+    def validate_authentication(self, data, **kwargs):
+        """Ensure either client_id or api_key is provided."""
+        has_client_id = data.get('client_id')
+        has_api_key = data.get('api_key')
+        
+        if not has_client_id and not has_api_key:
+            raise ValidationError({
+                '_schema': ['Either client_id or api_key must be provided']
+            })
+        
+        return data
+
+
+class BatchTrackingSchema(BaseSchema):
+    """Schema for batch event tracking with unified support."""
+    
+    # NEW: Unified API key for batch operations
+    api_key = APIKeyField(missing=None)
+    
+    events = fields.List(
+        fields.Nested(AnalyticsEventSchema),
+        required=True,
+        validate=validate.Length(min=1, max=50)
     )
 
 
@@ -470,3 +599,109 @@ def validate_email(email):
     import re
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
+
+
+# NEW: Unified API key validation functions
+def validate_api_key_format(api_key: str) -> bool:
+    """
+    Validate API key format for unified approach.
+    
+    Args:
+        api_key: The API key to validate
+        
+    Returns:
+        bool: True if valid format, False otherwise
+    """
+    if not api_key:
+        return False
+    
+    # Check prefix
+    if not api_key.startswith('cb_api_'):
+        return False
+    
+    # Check length
+    if len(api_key) != 64:
+        return False
+    
+    # Check characters
+    if not re.match(r'^cb_api_[a-zA-Z0-9_]+$', api_key):
+        return False
+    
+    return True
+
+
+def generate_api_key() -> str:
+    """
+    Generate a new API key for unified approach.
+    
+    Returns:
+        str: A new API key in the format cb_api_XXXXXXXXX
+    """
+    import secrets
+    import string
+    
+    # Generate 57 random characters (64 total - 7 for prefix)
+    alphabet = string.ascii_letters + string.digits + '_'
+    random_part = ''.join(secrets.choice(alphabet) for _ in range(57))
+    
+    return f'cb_api_{random_part}'
+
+
+def validate_domain_format(domain: str) -> bool:
+    """
+    Validate domain format.
+    
+    Args:
+        domain: The domain to validate
+        
+    Returns:
+        bool: True if valid format, False otherwise
+    """
+    if not domain:
+        return False
+    
+    # Remove protocol if present
+    clean_domain = domain.replace('http://', '').replace('https://', '')
+    clean_domain = clean_domain.split('/')[0]  # Remove path
+    
+    # Remove www prefix
+    if clean_domain.startswith('www.'):
+        clean_domain = clean_domain[4:]
+    
+    # Basic domain validation
+    domain_pattern = re.compile(
+        r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'
+    )
+    
+    return bool(domain_pattern.match(clean_domain))
+
+
+def clean_domain(domain: str) -> str:
+    """
+    Clean and normalize domain format.
+    
+    Args:
+        domain: The domain to clean
+        
+    Returns:
+        str: Cleaned domain
+    """
+    if not domain:
+        return domain
+    
+    # Remove protocol
+    clean = domain.lower().strip()
+    if clean.startswith('http://'):
+        clean = clean[7:]
+    elif clean.startswith('https://'):
+        clean = clean[8:]
+    
+    # Remove www prefix
+    if clean.startswith('www.'):
+        clean = clean[4:]
+    
+    # Remove trailing slash and path
+    clean = clean.split('/')[0].rstrip('/')
+    
+    return clean
+
