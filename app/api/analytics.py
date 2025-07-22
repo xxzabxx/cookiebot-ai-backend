@@ -1,6 +1,7 @@
 """
 Analytics API endpoints with optimized queries and caching.
 Fixes performance issues identified in the review.
+FIXED: SQL BinaryExpression errors that caused registration failures.
 """
 from datetime import datetime, timedelta
 from typing import Dict, Any
@@ -35,6 +36,7 @@ def get_dashboard_summary():
     """
     Get dashboard summary with optimized queries.
     Fixes N+1 query problems and implements caching.
+    FIXED: SQL BinaryExpression errors.
     """
     try:
         current_user_id = int(get_jwt_identity())
@@ -61,14 +63,15 @@ def get_dashboard_summary():
         # Optimized aggregation query
         from sqlalchemy import func
         
+        # FIXED: Use .is_() for boolean comparisons to avoid BinaryExpression errors
         today_stats = db.session.query(
             func.count(func.distinct(AnalyticsEvent.visitor_id)).label('unique_visitors'),
             func.sum(AnalyticsEvent.revenue_generated).label('total_revenue'),
             func.count(
-                func.case([(AnalyticsEvent.consent_given == True, 1)])
+                func.case([(AnalyticsEvent.consent_given.is_(True), 1)])  # FIXED: was == True
             ).label('consents_given'),
             func.count(
-                func.case([(AnalyticsEvent.consent_given.in_([True, False]), 1)])
+                func.case([(AnalyticsEvent.consent_given.isnot(None), 1)])  # FIXED: was .in_([True, False])
             ).label('total_consent_events')
         ).filter(
             AnalyticsEvent.website_id.in_(website_ids),
@@ -328,7 +331,7 @@ def export_analytics(website_id: int, validated_data: Dict[str, Any]):
                 event.visitor_id or '',
                 event.consent_given if event.consent_given is not None else '',
                 float(event.revenue_generated or 0),
-                str(event.metadata or {})
+                str(event.event_metadata or {})
             ])
         
         csv_data = output.getvalue()
