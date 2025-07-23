@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DECIMAL, DateTime, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from sqlalchemy import func
+from sqlalchemy import func, case
 import structlog
 
 from app.utils.database import db
@@ -167,23 +167,15 @@ class AnalyticsEvent(db.Model):
             query = query.filter(cls.event_type == event_type)
         
         # Get aggregated data in a single query
-        # FIXED: Use .is_() for boolean comparisons to avoid BinaryExpression errors
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         result = db.session.query(
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
-            func.sum(cls.revenue_generated).label('total_revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
-            ).label('consents_denied'),
-            func.count(
-                func.case([(cls.event_type == 'page_view', 1)])
-            ).label('page_views'),
-            func.count(
-                func.case([(cls.event_type == 'banner_shown', 1)])
-            ).label('banner_shows')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('total_revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.sum(case((cls.consent_given.is_(False), 1), else_=0)).label('consents_denied'),
+            func.sum(case((cls.event_type == 'page_view', 1), else_=0)).label('page_views'),
+            func.sum(case((cls.event_type == 'banner_shown', 1), else_=0)).label('banner_shows')
         ).filter(
             cls.website_id == website_id,
             cls.created_at >= start_date,
@@ -236,18 +228,14 @@ class AnalyticsEvent(db.Model):
         start_date = datetime.utcnow() - timedelta(days=days)
         
         # Query daily aggregated data
-        # FIXED: Use .is_() for boolean comparisons
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         daily_data = db.session.query(
             func.date(cls.created_at).label('date'),
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
-            func.sum(cls.revenue_generated).label('revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
-            ).label('consents_denied')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.sum(case((cls.consent_given.is_(False), 1), else_=0)).label('consents_denied')
         ).filter(
             cls.website_id == website_id,
             cls.created_at >= start_date
@@ -379,24 +367,16 @@ class AnalyticsEvent(db.Model):
             query = query.filter(cls.domain == domain)
         
         # Get aggregated data across all websites
-        # FIXED: Use .is_() for boolean comparisons
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         result = db.session.query(
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.count(func.distinct(cls.domain)).label('total_websites'),
-            func.sum(cls.revenue_generated).label('total_revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
-            ).label('consents_denied'),
-            func.count(
-                func.case([(cls.event_type == 'page_view', 1)])
-            ).label('page_views'),
-            func.count(
-                func.case([(cls.event_type == 'banner_shown', 1)])
-            ).label('banner_shows')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('total_revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.sum(case((cls.consent_given.is_(False), 1), else_=0)).label('consents_denied'),
+            func.sum(case((cls.event_type == 'page_view', 1), else_=0)).label('page_views'),
+            func.sum(case((cls.event_type == 'banner_shown', 1), else_=0)).label('banner_shows')
         ).filter(
             cls.api_key == api_key,
             cls.created_at >= start_date,
@@ -455,18 +435,14 @@ class AnalyticsEvent(db.Model):
         FIXED: SQL BinaryExpression errors.
         """
         
-        # FIXED: Use .is_() for boolean comparisons
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         result = db.session.query(
             cls.domain,
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
-            func.sum(cls.revenue_generated).label('revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
-            ).label('consents_denied')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.sum(case((cls.consent_given.is_(False), 1), else_=0)).label('consents_denied')
         ).filter(
             cls.api_key == api_key,
             cls.created_at >= start_date,
@@ -513,19 +489,15 @@ class AnalyticsEvent(db.Model):
         start_date = datetime.utcnow() - timedelta(days=days)
         
         # Query daily aggregated data
-        # FIXED: Use .is_() for boolean comparisons
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         query = db.session.query(
             func.date(cls.created_at).label('date'),
             func.count(cls.id).label('total_events'),
             func.count(func.distinct(cls.visitor_id)).label('unique_visitors'),
             func.count(func.distinct(cls.domain)).label('active_websites'),
-            func.sum(cls.revenue_generated).label('revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(cls.consent_given.is_(False), 1)])  # FIXED: was == False
-            ).label('consents_denied')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.sum(case((cls.consent_given.is_(False), 1), else_=0)).label('consents_denied')
         ).filter(
             cls.api_key == api_key,
             cls.created_at >= start_date
@@ -574,15 +546,13 @@ class AnalyticsEvent(db.Model):
         
         start_time = datetime.utcnow() - timedelta(minutes=minutes)
         
-        # FIXED: Use .is_() for boolean comparisons
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         result = db.session.query(
             func.count(cls.id).label('recent_events'),
             func.count(func.distinct(cls.visitor_id)).label('active_visitors'),
             func.count(func.distinct(cls.domain)).label('active_websites'),
-            func.sum(cls.revenue_generated).label('recent_revenue'),
-            func.count(
-                func.case([(cls.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('recent_consents')
+            func.coalesce(func.sum(cls.revenue_generated), 0).label('recent_revenue'),
+            func.sum(case((cls.consent_given.is_(True), 1), else_=0)).label('recent_consents')
         ).filter(
             cls.api_key == api_key,
             cls.created_at >= start_time
@@ -620,7 +590,7 @@ class AnalyticsEvent(db.Model):
         # If website_id not provided, we'll need to look it up or create it
         # This would typically be handled by the Website model
         if not website_id:
-            # For now, we'll use a placeholder - this should be handled by the calling code
+            # For now, we'll use a placeholder - this should be resolved by the calling code
             website_id = 1  # This should be resolved by the calling endpoint
         
         return cls.create_event(
