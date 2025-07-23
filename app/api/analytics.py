@@ -61,18 +61,14 @@ def get_dashboard_summary():
         today_end = datetime.combine(today, datetime.max.time())
         
         # Optimized aggregation query
-        from sqlalchemy import func
+        from sqlalchemy import func, case
         
-        # FIXED: Use .is_() for boolean comparisons to avoid BinaryExpression errors
+        # FIXED: Use func.sum(case((condition, 1), else_=0)) pattern
         today_stats = db.session.query(
             func.count(func.distinct(AnalyticsEvent.visitor_id)).label('unique_visitors'),
-            func.sum(AnalyticsEvent.revenue_generated).label('total_revenue'),
-            func.count(
-                func.case([(AnalyticsEvent.consent_given.is_(True), 1)])  # FIXED: was == True
-            ).label('consents_given'),
-            func.count(
-                func.case([(AnalyticsEvent.consent_given.isnot(None), 1)])  # FIXED: was .in_([True, False])
-            ).label('total_consent_events')
+            func.coalesce(func.sum(AnalyticsEvent.revenue_generated), 0).label('total_revenue'),
+            func.sum(case((AnalyticsEvent.consent_given.is_(True), 1), else_=0)).label('consents_given'),
+            func.count(AnalyticsEvent.id).label('total_consent_events')
         ).filter(
             AnalyticsEvent.website_id.in_(website_ids),
             AnalyticsEvent.created_at >= today_start,
